@@ -1,0 +1,93 @@
+app_name: distributed-crawler
+redis_dsn: redis://127.0.0.1:6379/0
+checkpoint_dir: ./runtime/checkpoints
+
+master:
+  host: 127.0.0.1
+  port: 8088
+  worker_ttl_seconds: 30
+  stale_task_seconds: 120
+  bloom_capacity: 1000000
+  bloom_false_positive_rate: 0.01
+  bloom_hashes:
+  queue_name: crawler
+  result_queue_name: crawler:results
+  dead_letter_queue_name: crawler:dead_letter
+  default_spider: generic_fetch
+
+worker:
+  worker_id: worker-1
+  concurrency: 100
+  heartbeat_interval_seconds: 5
+  request_timeout_seconds: 20
+  connect_timeout_seconds: 10
+  retries: 4
+  base_backoff_seconds: 1
+  max_backoff_seconds: 16
+  download_dir: ./runtime/downloads
+
+storage:
+  backend: jsonl
+  jsonl_path: ./runtime/results/results.jsonl
+  mongodb_dsn: mongodb://127.0.0.1:27017
+  mongodb_database: crawler
+  mongodb_collection: results
+  postgres_dsn: postgresql://postgres:postgres@127.0.0.1:5432/crawler
+  postgres_table: crawl_results
+
+proxy:
+  enabled: false
+  verify_url: https://httpbin.org/ip
+  verify_timeout_seconds: 8
+  refresh_interval_seconds: 300
+  failure_threshold: 3
+  cooldown_seconds: 60
+  static_proxies: []
+  provider_api_url: ""
+  provider_auth_header: ""
+
+circuit_breaker:
+  enabled: true
+  failure_threshold: 8
+  recovery_timeout_seconds: 30
+  half_open_success_threshold: 2
+
+session:
+  enabled: true
+  redis_prefix: crawler:sessions
+  local_backup_path: ./runtime/sessions/sessions.json
+
+auth:
+  enabled: false
+  domains:
+    example.com:
+      login_url: https://example.com/api/login
+      username: your_username
+      password: your_password
+      username_field: username
+      password_field: password
+      submit_type: json   # json or form
+      extra_payload: {}
+      success_status_codes: [200]
+      expire_status_codes: [401, 403]
+      expire_body_keywords: ["login required", "please login", "unauthorized"]
+
+rate_limit:
+  default_qps: 3.0
+  default_burst: 6
+  per_domain:
+    httpbin.org:
+      qps: 2.0
+      burst: 4
+
+schedules:
+  - name: sample-httpbin
+    trigger: interval
+    seconds: 300
+    priority: medium
+    task:
+      spider: generic_fetch
+      url: https://httpbin.org/get
+      method: GET
+      metadata:
+        source: schedule

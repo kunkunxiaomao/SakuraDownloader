@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura Local Gallery</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">SK</div>
+        <div>
+          <h1>本地图库</h1>
+          <p>Sakura Library</p>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-button active" data-view="gallery">图库</button>
+        <button class="nav-button" data-view="favorites">收藏</button>
+        <button class="nav-button" data-view="artists">作者</button>
+        <button class="nav-button" data-view="sync">同步</button>
+      </nav>
+
+      <section class="panel plugin-panel">
+        <h2>插件页面</h2>
+        <div id="pluginNav" class="nav compact-nav">
+          <button class="nav-button" data-view="xMedia">X 作者媒体</button>
+          <button id="xiaohongshuNavButton" class="nav-button hidden" data-view="xiaohongshu">小红书</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>标签</h2>
+        <div id="tagList" class="tag-list"></div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="toolbar">
+        <div class="search-wrap">
+          <input id="searchInput" type="search" placeholder="搜索标题、作者、简介" />
+          <select id="typeFilter" aria-label="类型筛选">
+            <option value="">全部类型</option>
+            <option value="illust">插画</option>
+            <option value="novel">小说</option>
+          </select>
+        </div>
+        <div class="toolbar-actions">
+          <button id="buildThumbsButton" class="ghost-button">生成缩略图</button>
+          <button id="scanButton" class="primary-button">扫描旧目录</button>
+        </div>
+      </header>
+
+      <section id="statusLine" class="status-line">准备就绪</section>
+
+      <section id="galleryView" class="view active">
+        <div class="section-head">
+          <div>
+            <h2 id="viewTitle">全部作品</h2>
+            <p id="viewSubtitle">本地已入库作品</p>
+          </div>
+          <button id="clearFiltersButton" class="ghost-button">清除筛选</button>
+        </div>
+        <div id="artworkGrid" class="artwork-grid"></div>
+        <div class="pager">
+          <button id="prevPageButton" class="ghost-button">上一页</button>
+          <span id="pageInfo">0 / 0</span>
+          <button id="nextPageButton" class="ghost-button">下一页</button>
+        </div>
+      </section>
+
+      <section id="artistsView" class="view">
+        <div class="section-head">
+          <div>
+            <h2>作者</h2>
+            <p>按本地作品数量排序</p>
+          </div>
+        </div>
+        <div id="artistList" class="artist-list"></div>
+      </section>
+
+      <section id="syncView" class="view">
+        <div class="section-head">
+          <div>
+            <h2>关注同步</h2>
+            <p>使用已保存 Cookie 同步关注作者的新作品</p>
+          </div>
+          <button id="syncButton" class="primary-button">同步关注作者</button>
+        </div>
+        <div class="import-strip">
+          <div>
+            <strong>Pixiv Cookie</strong>
+            <span>导入 Get cookies.txt 导出的 txt/json，自动保存为本地会话。</span>
+          </div>
+          <label class="file-button">
+            选择 txt
+            <input id="pixivCookieFile" type="file" accept=".txt,.json" />
+          </label>
+          <button id="importPixivCookieButton" class="ghost-button" type="button">导入 Pixiv Cookie</button>
+        </div>
+        <form id="followForm" class="follow-form">
+          <input id="followArtistId" inputmode="numeric" placeholder="作者 ID" />
+          <input id="followArtistName" placeholder="备注名称，可选" />
+          <button class="ghost-button" type="submit">添加关注</button>
+        </form>
+        <div id="followedList" class="artist-list"></div>
+      </section>
+
+      <section id="xMediaView" class="view">
+        <div class="section-head">
+          <div>
+            <h2>X 作者媒体</h2>
+            <p>输入作者名称，解析媒体页中的图片或视频，勾选后下载到本地。</p>
+          </div>
+        </div>
+
+        <div class="import-strip">
+          <div>
+            <strong>X Cookie</strong>
+            <span>导入 Get cookies.txt 导出的 txt/json，会写入 runtime/x_cookies.json。</span>
+          </div>
+          <label class="file-button">
+            选择 txt
+            <input id="xCookieFile" type="file" accept=".txt,.json" />
+          </label>
+          <button id="importXCookieButton" class="ghost-button" type="button">导入 X Cookie</button>
+        </div>
+
+        <form id="xMediaForm" class="x-media-form">
+          <input id="xUsernameInput" placeholder="作者名称，例如 nasa 或 @nasa" autocomplete="off" />
+          <select id="xMediaType">
+            <option value="all">图片和视频</option>
+            <option value="image">只看图片</option>
+            <option value="video">只看视频</option>
+          </select>
+          <input id="xMaxItems" type="number" min="1" max="500" value="120" />
+          <button class="primary-button" type="submit">解析媒体</button>
+        </form>
+
+        <div class="x-actions">
+          <label><input id="xSelectAll" type="checkbox" checked /> 全选</label>
+          <button id="downloadXSelectedButton" class="primary-button" type="button">下载选中</button>
+          <span id="xMediaSummary">等待解析</span>
+        </div>
+
+        <div id="xMediaGrid" class="x-media-grid"></div>
+
+        <div class="section-head x-local-head">
+          <div>
+            <h2>本地 X 媒体</h2>
+            <p>查看已下载的 X 图片和视频，可删除本地文件。</p>
+          </div>
+          <div class="toolbar-actions">
+            <button id="refreshXLocalButton" class="ghost-button" type="button">刷新</button>
+            <button id="deleteXLocalButton" class="ghost-button danger-button" type="button">删除选中</button>
+          </div>
+        </div>
+        <div class="x-actions">
+          <label><input id="xLocalSelectAll" type="checkbox" /> 全选本地文件</label>
+          <span id="xLocalSummary">等待加载</span>
+        </div>
+        <div id="xLocalGrid" class="x-media-grid"></div>
+      </section>
+
+      <section id="xiaohongshuView" class="view">
+        <div class="section-head">
+          <div>
+            <h2>小红书</h2>
+            <p>输入关键词或笔记链接，先预览再勾选下载。</p>
+          </div>
+        </div>
+        <form id="xhsForm" class="x-media-form">
+          <input id="xhsTargetInput" placeholder="关键词，或 xiaohongshu.com/explore/... 链接" autocomplete="off" />
+          <input id="xhsLimitInput" type="number" min="1" max="50" value="20" />
+          <button class="primary-button" type="submit">解析预览</button>
+        </form>
+        <div class="x-actions">
+          <label><input id="xhsSelectAll" type="checkbox" checked /> 全选</label>
+          <button id="downloadXhsSelectedButton" class="primary-button" type="button">下载选中</button>
+          <span id="xhsSummary">等待解析</span>
+        </div>
+        <div id="xhsGrid" class="x-media-grid"></div>
+      </section>
+    </main>
+
+    <dialog id="detailDialog" class="detail-dialog">
+      <button id="closeDialogButton" class="close-button" aria-label="关闭">×</button>
+      <div id="detailContent"></div>
+    </dialog>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

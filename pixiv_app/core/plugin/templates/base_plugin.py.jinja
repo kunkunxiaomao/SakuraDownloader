@@ -1,0 +1,31 @@
+"""
+{{ name }} plugin — auto-generated at {{ generated_at }}.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from pixiv_app.core.plugin.base import BasePlugin, Resource
+
+
+class {{ class_name }}(BasePlugin):
+    domain = "{{ domain }}"
+    name = "{{ name }}"
+    version = "1.0.0"
+
+    def can_handle(self, url: str) -> bool:
+        return "{{ domain }}" in url.lower()
+
+    def parse(self, url: str) -> list[Resource]:
+        raise NotImplementedError("Implement URL parsing and build Resource list.")
+
+    def download(self, resource: Resource, save_path: Path) -> list[Path]:
+        raise NotImplementedError("Download files for resource into save_path.")
+
+    def get_headers(self) -> dict[str, str]:
+        return {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}
+
+
+plugin_class = {{ class_name }}
