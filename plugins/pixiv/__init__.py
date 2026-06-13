@@ -1,1 +1,0 @@
-"""Bundled Pixiv plugin package."""

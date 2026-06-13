@@ -6,7 +6,6 @@ from pathlib import Path
 
 
 APP_NAME = "SakuraDownloader"
-LEGACY_APP_NAME = "PixivDownloader"
 
 
 def is_frozen() -> bool:
@@ -26,25 +25,12 @@ def executable_dir() -> Path:
 
 
 def data_root() -> Path:
-    override = os.environ.get("SAKURA_APP_DATA_DIR") or os.environ.get("PIXIV_APP_DATA_DIR")
+    override = os.environ.get("SAKURA_APP_DATA_DIR")
     if override:
         root = Path(override)
     elif is_frozen():
         local_appdata = os.environ.get("LOCALAPPDATA")
         root = Path(local_appdata) / APP_NAME if local_appdata else executable_dir() / "data"
-        legacy_root = Path(local_appdata) / LEGACY_APP_NAME if local_appdata else None
-        if legacy_root and legacy_root.exists() and not root.exists():
-            root.mkdir(parents=True, exist_ok=True)
-            for name in ("pixiv_app_session.json", "runtime", "profiles", "plugins"):
-                src = legacy_root / name
-                dst = root / name
-                if src.exists() and not dst.exists():
-                    if src.is_dir():
-                        import shutil
-
-                        shutil.copytree(src, dst)
-                    else:
-                        dst.write_bytes(src.read_bytes())
     else:
         root = resource_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -87,7 +73,7 @@ def webui_root() -> Path:
 
 
 def app_session_file() -> Path:
-    return data_root() / "pixiv_app_session.json"
+    return data_root() / "sakura_session.json"
 
 
 def downloads_root() -> Path:

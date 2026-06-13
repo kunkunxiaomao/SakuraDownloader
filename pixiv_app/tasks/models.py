@@ -18,7 +18,7 @@ TaskStatus = Literal["pending", "running", "done", "failed"]
 class DownloadTaskSpec:
     """Serializable unit stored in SQLite via TaskQueue (payload omits secrets)."""
 
-    target_type: Literal["illust", "novel"]
+    target_type: str
     target_id: int
     task_kind: str
     priority: TaskPriority
@@ -39,7 +39,7 @@ class ParsedLine:
     tag: str = ""
     keyword_text: str = ""
     raw_token: str = ""
-    pixiv_kind: str = "user"
+    resource_type: str = "generic"
 
 
 @dataclass

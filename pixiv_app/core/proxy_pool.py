@@ -116,10 +116,10 @@ class QuakeClient:
                 "language": "zh_CN",
                 "network": "4g",
                 "browser_info": "Chrome",
-                "fingerprint": "pixiv-proxy-pool",
+                "fingerprint": "sakura-proxy-pool",
                 "user_agent": self._web_headers()["User-Agent"],
                 "date": time.strftime("%Y/%m/%d %H:%M:%S"),
-                "UUID": "pixiv-proxy-association",
+                "UUID": "sakura-proxy-association",
             },
         }
         kwargs = dict(self.request_kwargs)

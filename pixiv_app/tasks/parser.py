@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pixiv_app.core.downloader import parse_pixiv_target
 from pixiv_app.tasks.models import ParsePreview, ParsedLine
 
 
@@ -19,8 +18,8 @@ def parse_batch_for_mode(
 ) -> tuple[list[ParsedLine], ParsePreview]:
     """
     Parse multi-line / comma / space separated input into structured intents.
-
-    ui_mode matches GUI combo selection so validation stays aligned with existing rules.
+    Legacy stub — delegates to generic tokenizer; platform-specific parsing
+    is handled by plugins at runtime.
     """
     tokens = split_input_blob(raw)
     lines: list[ParsedLine] = []
@@ -28,15 +27,6 @@ def parse_batch_for_mode(
 
     def bump(key: str) -> None:
         stats[key] = stats.get(key, 0) + 1
-
-    if ui_mode == "keyword":
-        kw = " ".join(tokens) if tokens else raw.strip()
-        if kw.startswith("#"):
-            kw = kw[1:].strip()
-        if kw:
-            lines.append(ParsedLine(category="keyword", id_value=0, keyword_text=kw, raw_token=raw.strip()))
-            bump("keyword")
-        return lines, ParsePreview(total_lines=len(lines), by_category=stats)
 
     for token in tokens:
         t = token.strip()
@@ -49,38 +39,8 @@ def parse_batch_for_mode(
                 bump("tag")
             continue
 
-        try:
-            kind, num_id = parse_pixiv_target(t)
-        except ValueError:
-            continue
-
-        if ui_mode == "novel":
-            if kind == "novel":
-                lines.append(ParsedLine(category="novel", id_value=num_id, raw_token=t, pixiv_kind=kind))
-                bump("novel")
-            elif kind == "unknown":
-                lines.append(ParsedLine(category="novel", id_value=num_id, raw_token=t, pixiv_kind=kind))
-                bump("novel")
-            continue
-
-        if ui_mode == "illust":
-            if kind == "illust":
-                lines.append(ParsedLine(category="illust", id_value=num_id, raw_token=t, pixiv_kind=kind))
-                bump("illust")
-            elif kind == "unknown":
-                lines.append(ParsedLine(category="illust", id_value=num_id, raw_token=t, pixiv_kind=kind))
-                bump("illust")
-            continue
-
-        # ui_mode == "user"
-        if kind == "user":
-            lines.append(ParsedLine(category="user", id_value=num_id, raw_token=t, pixiv_kind=kind))
-            bump("user")
-        elif kind == "illust":
-            lines.append(ParsedLine(category="user", id_value=num_id, raw_token=t, pixiv_kind=kind))
-            bump("user")
-        elif kind == "unknown":
-            lines.append(ParsedLine(category="user", id_value=num_id, raw_token=t, pixiv_kind=kind))
-            bump("user")
+        # Generic fallback: store as unknown keyword token
+        lines.append(ParsedLine(category="keyword", id_value=0, keyword_text=t, raw_token=t))
+        bump("keyword")
 
     return lines, ParsePreview(total_lines=len(lines), by_category=stats)

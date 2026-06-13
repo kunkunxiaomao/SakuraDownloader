@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from pixiv_app.core.library import DEFAULT_LIBRARY_DB, DownloadFileRecord, PixivLibrary
+from pixiv_app.core.library import DEFAULT_LIBRARY_DB, DownloadFileRecord, SakuraLibrary
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
@@ -29,7 +29,7 @@ class LegacyDownloadImporter:
         if not root_path.exists():
             return summary
 
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         imported_artworks: set[int] = set()
         try:
             for file_path in root_path.rglob("*"):

@@ -25,10 +25,7 @@
 
       <section class="panel plugin-panel">
         <h2>插件页面</h2>
-        <div id="pluginNav" class="nav compact-nav">
-          <button class="nav-button" data-view="xMedia">X 作者媒体</button>
-          <button id="xiaohongshuNavButton" class="nav-button hidden" data-view="xiaohongshu">小红书</button>
-        </div>
+        <div id="pluginNav" class="nav compact-nav"></div>
       </section>
 
       <section class="panel">
@@ -84,21 +81,20 @@
       <section id="syncView" class="view">
         <div class="section-head">
           <div>
-            <h2>关注同步</h2>
-            <p>使用已保存 Cookie 同步关注作者的新作品</p>
+            <h2>关注管理</h2>
+            <p>管理关注的作者列表</p>
           </div>
-          <button id="syncButton" class="primary-button">同步关注作者</button>
         </div>
         <div class="import-strip">
           <div>
-            <strong>Pixiv Cookie</strong>
-            <span>导入 Get cookies.txt 导出的 txt/json，自动保存为本地会话。</span>
+            <strong>Cookie 导入</strong>
+            <span>导入 Get cookies.txt 导出的 txt/json 文件。</span>
           </div>
           <label class="file-button">
             选择 txt
-            <input id="pixivCookieFile" type="file" accept=".txt,.json" />
+            <input id="cookieFileInput" type="file" accept=".txt,.json" />
           </label>
-          <button id="importPixivCookieButton" class="ghost-button" type="button">导入 Pixiv Cookie</button>
+          <button id="importCookieButton" class="ghost-button" type="button">导入 Cookie</button>
         </div>
         <form id="followForm" class="follow-form">
           <input id="followArtistId" inputmode="numeric" placeholder="作者 ID" />
@@ -108,80 +104,24 @@
         <div id="followedList" class="artist-list"></div>
       </section>
 
-      <section id="xMediaView" class="view">
+      <section id="pluginView" class="view">
         <div class="section-head">
           <div>
-            <h2>X 作者媒体</h2>
-            <p>输入作者名称，解析媒体页中的图片或视频，勾选后下载到本地。</p>
+            <h2 id="pluginViewTitle">插件</h2>
+            <p id="pluginViewDesc">使用已导入插件解析和下载内容</p>
           </div>
         </div>
-
-        <div class="import-strip">
-          <div>
-            <strong>X Cookie</strong>
-            <span>导入 Get cookies.txt 导出的 txt/json，会写入 runtime/x_cookies.json。</span>
-          </div>
-          <label class="file-button">
-            选择 txt
-            <input id="xCookieFile" type="file" accept=".txt,.json" />
-          </label>
-          <button id="importXCookieButton" class="ghost-button" type="button">导入 X Cookie</button>
-        </div>
-
-        <form id="xMediaForm" class="x-media-form">
-          <input id="xUsernameInput" placeholder="作者名称，例如 nasa 或 @nasa" autocomplete="off" />
-          <select id="xMediaType">
-            <option value="all">图片和视频</option>
-            <option value="image">只看图片</option>
-            <option value="video">只看视频</option>
-          </select>
-          <input id="xMaxItems" type="number" min="1" max="500" value="120" />
-          <button class="primary-button" type="submit">解析媒体</button>
-        </form>
-
-        <div class="x-actions">
-          <label><input id="xSelectAll" type="checkbox" checked /> 全选</label>
-          <button id="downloadXSelectedButton" class="primary-button" type="button">下载选中</button>
-          <span id="xMediaSummary">等待解析</span>
-        </div>
-
-        <div id="xMediaGrid" class="x-media-grid"></div>
-
-        <div class="section-head x-local-head">
-          <div>
-            <h2>本地 X 媒体</h2>
-            <p>查看已下载的 X 图片和视频，可删除本地文件。</p>
-          </div>
-          <div class="toolbar-actions">
-            <button id="refreshXLocalButton" class="ghost-button" type="button">刷新</button>
-            <button id="deleteXLocalButton" class="ghost-button danger-button" type="button">删除选中</button>
-          </div>
-        </div>
-        <div class="x-actions">
-          <label><input id="xLocalSelectAll" type="checkbox" /> 全选本地文件</label>
-          <span id="xLocalSummary">等待加载</span>
-        </div>
-        <div id="xLocalGrid" class="x-media-grid"></div>
-      </section>
-
-      <section id="xiaohongshuView" class="view">
-        <div class="section-head">
-          <div>
-            <h2>小红书</h2>
-            <p>输入关键词或笔记链接，先预览再勾选下载。</p>
-          </div>
-        </div>
-        <form id="xhsForm" class="x-media-form">
-          <input id="xhsTargetInput" placeholder="关键词，或 xiaohongshu.com/explore/... 链接" autocomplete="off" />
-          <input id="xhsLimitInput" type="number" min="1" max="50" value="20" />
+        <form id="pluginForm" class="x-media-form">
+          <input id="pluginTargetInput" placeholder="输入链接或关键词" autocomplete="off" />
+          <input id="pluginLimitInput" type="number" min="1" max="200" value="20" />
           <button class="primary-button" type="submit">解析预览</button>
         </form>
         <div class="x-actions">
-          <label><input id="xhsSelectAll" type="checkbox" checked /> 全选</label>
-          <button id="downloadXhsSelectedButton" class="primary-button" type="button">下载选中</button>
-          <span id="xhsSummary">等待解析</span>
+          <label><input id="pluginSelectAll" type="checkbox" checked /> 全选</label>
+          <button id="downloadPluginSelectedButton" class="primary-button" type="button">下载选中</button>
+          <span id="pluginSummary">等待解析</span>
         </div>
-        <div id="xhsGrid" class="x-media-grid"></div>
+        <div id="pluginGrid" class="x-media-grid"></div>
       </section>
     </main>
 

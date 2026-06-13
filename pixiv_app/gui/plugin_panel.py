@@ -316,8 +316,5 @@ class PluginPanelWindow(ctk.CTkToplevel):
         user_root = user_plugins_root()
         self.manager = PluginManager(plugin_roots())
         self.manager.load_all()
-        pixiv = self.manager.plugins.get("Pixiv")
-        if pixiv is not None and hasattr(pixiv, "set_auth"):
-            pixiv.set_auth(cookie)
         panel = PluginPanel(self, self.manager, user_root=user_root)
         panel.pack(fill="both", expand=True)

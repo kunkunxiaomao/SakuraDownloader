@@ -3,10 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pixiv_app.core.auth import SessionStore
-from pixiv_app.core.downloader import download_user_works, fetch_user_work_ids
 from pixiv_app.core.library_importer import LegacyDownloadImporter
-from pixiv_app.core.library import DEFAULT_LIBRARY_DB, PixivLibrary
+from pixiv_app.core.library import DEFAULT_LIBRARY_DB, SakuraLibrary
 from pixiv_app.core.thumbnails import DEFAULT_THUMBNAIL_DIR, ThumbnailCache
 
 
@@ -34,7 +32,7 @@ class LocalGalleryService:
     ) -> dict[str, Any]:
         limit = max(1, min(int(limit), 200))
         offset = max(0, int(offset))
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             where: list[str] = []
             params: list[Any] = []
@@ -109,7 +107,7 @@ class LocalGalleryService:
     def get_artwork(self, artwork_id: int, *, ensure_thumbnails: bool = True) -> dict[str, Any] | None:
         if ensure_thumbnails:
             self.thumbnail_cache.ensure_for_artwork(artwork_id)
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             row = library.connection.execute(
                 """
@@ -165,7 +163,7 @@ class LocalGalleryService:
             library.close()
 
     def list_tags(self, *, query: str = "", limit: int = 100) -> list[dict[str, Any]]:
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             params: list[Any] = []
             where = ""
@@ -189,7 +187,7 @@ class LocalGalleryService:
             library.close()
 
     def list_artists(self, *, query: str = "", limit: int = 100) -> list[dict[str, Any]]:
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             params: list[Any] = []
             where = ""
@@ -213,7 +211,7 @@ class LocalGalleryService:
             library.close()
 
     def get_artist(self, artist_id: int, *, limit: int = 60, offset: int = 0) -> dict[str, Any] | None:
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             row = library.connection.execute(
                 """
@@ -238,7 +236,7 @@ class LocalGalleryService:
             library.close()
 
     def list_favorites(self, *, limit: int = 60, offset: int = 0) -> dict[str, Any]:
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             total = library.connection.execute("SELECT COUNT(*) AS total FROM favorites").fetchone()["total"]
             rows = library.connection.execute(
@@ -269,7 +267,7 @@ class LocalGalleryService:
             library.close()
 
     def set_favorite(self, artwork_id: int, favorite: bool, note: str = "") -> dict[str, Any]:
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             library.set_favorite(artwork_id, favorite, note)
             return {"artwork_id": artwork_id, "favorite": favorite}
@@ -277,7 +275,7 @@ class LocalGalleryService:
             library.close()
 
     def list_followed_artists(self) -> list[dict[str, Any]]:
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             rows = library.connection.execute(
                 """
@@ -297,7 +295,7 @@ class LocalGalleryService:
             library.close()
 
     def set_followed_artist(self, artist_id: int, followed: bool, name: str = "") -> dict[str, Any]:
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             library.set_followed_artist(artist_id, followed, name)
             return {"artist_id": artist_id, "followed": followed}
@@ -309,85 +307,12 @@ class LocalGalleryService:
         self.thumbnail_cache.build_missing(limit=500)
         return summary.__dict__
 
-    def sync_followed_artists(
-        self,
-        *,
-        cookie: str = "",
-        max_new_per_artist: int = 20,
-        download: bool = True,
-        save_root: str | Path = "Sakura_Downloads",
-    ) -> dict[str, Any]:
-        if not cookie:
-            cookie = str(SessionStore().load().get("cookie", "")).strip()
-        if not cookie:
-            raise ValueError("No Pixiv cookie available. Save a session in the GUI first or pass cookie explicitly.")
-
-        library = PixivLibrary(self.db_path)
-        try:
-            followed = library.connection.execute(
-                "SELECT artist_id FROM followed_artists WHERE enabled = 1 ORDER BY artist_id"
-            ).fetchall()
-        finally:
-            library.close()
-
-        results: list[dict[str, Any]] = []
-        for row in followed:
-            artist_id = int(row["artist_id"])
-            library = PixivLibrary(self.db_path)
-            try:
-                existing = {
-                    int(item["artwork_id"])
-                    for item in library.connection.execute(
-                        "SELECT artwork_id FROM artworks WHERE artist_id = ? AND type = 'illust'",
-                        (artist_id,),
-                    ).fetchall()
-                }
-            finally:
-                library.close()
-
-            try:
-                _, work_ids = fetch_user_work_ids(user_id=artist_id, cookie=cookie)
-                new_ids = [work_id for work_id in work_ids if work_id not in existing][: max(0, int(max_new_per_artist))]
-                downloaded = 0
-                if download and new_ids:
-                    _, download_results = download_user_works(
-                        user_id=artist_id,
-                        cookie=cookie,
-                        max_workers=3,
-                        request_delay=0.2,
-                        save_root=save_root,
-                        work_ids=new_ids,
-                    )
-                    downloaded = len([item for item in download_results if item.ok])
-                library = PixivLibrary(self.db_path)
-                try:
-                    library.mark_artist_synced(artist_id)
-                finally:
-                    library.close()
-                results.append(
-                    {
-                        "artist_id": artist_id,
-                        "remote_count": len(work_ids),
-                        "new_count": len(new_ids),
-                        "downloaded": downloaded,
-                        "error": "",
-                    }
-                )
-            except Exception as exc:
-                library = PixivLibrary(self.db_path)
-                try:
-                    library.mark_artist_synced(artist_id, error=str(exc))
-                finally:
-                    library.close()
-                results.append({"artist_id": artist_id, "remote_count": 0, "new_count": 0, "downloaded": 0, "error": str(exc)})
-        return {"artists": results}
-
     def build_missing_thumbnails(self, *, limit: int = 200) -> list[dict[str, Any]]:
         return [item.__dict__ for item in self.thumbnail_cache.build_missing(limit=limit)]
 
     def get_thumbnail_path(self, artwork_id: int, *, page_index: int = 0) -> Path | None:
         self.thumbnail_cache.ensure_for_artwork(artwork_id)
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             row = library.connection.execute(
                 """
@@ -405,7 +330,7 @@ class LocalGalleryService:
             library.close()
 
     def get_source_file_path(self, artwork_id: int, *, page_index: int = 0) -> Path | None:
-        library = PixivLibrary(self.db_path)
+        library = SakuraLibrary(self.db_path)
         try:
             row = library.connection.execute(
                 """
@@ -430,7 +355,7 @@ class LocalGalleryService:
                 continue
             self.thumbnail_cache.ensure_for_artwork(int(item["artwork_id"]))
 
-    def _refresh_thumbnail_paths(self, library: PixivLibrary, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _refresh_thumbnail_paths(self, library: SakuraLibrary, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         artwork_ids = [int(item["artwork_id"]) for item in items]
         if not artwork_ids:
             return items

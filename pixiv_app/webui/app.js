@@ -7,8 +7,8 @@ const state = {
   offset: 0,
   limit: 48,
   total: 0,
-  xPreviewId: "",
-  xhsPreviewId: "",
+  pluginPreviewId: "",
+  activePlugin: "",
 };
 
 const els = {
@@ -24,23 +24,12 @@ const els = {
   pageInfo: document.querySelector("#pageInfo"),
   dialog: document.querySelector("#detailDialog"),
   detail: document.querySelector("#detailContent"),
-  pixivCookieFile: document.querySelector("#pixivCookieFile"),
-  xCookieFile: document.querySelector("#xCookieFile"),
-  xUsername: document.querySelector("#xUsernameInput"),
-  xMediaType: document.querySelector("#xMediaType"),
-  xMaxItems: document.querySelector("#xMaxItems"),
-  xMediaGrid: document.querySelector("#xMediaGrid"),
-  xMediaSummary: document.querySelector("#xMediaSummary"),
-  xSelectAll: document.querySelector("#xSelectAll"),
-  xLocalGrid: document.querySelector("#xLocalGrid"),
-  xLocalSummary: document.querySelector("#xLocalSummary"),
-  xLocalSelectAll: document.querySelector("#xLocalSelectAll"),
-  xhsNavButton: document.querySelector("#xiaohongshuNavButton"),
-  xhsTarget: document.querySelector("#xhsTargetInput"),
-  xhsLimit: document.querySelector("#xhsLimitInput"),
-  xhsGrid: document.querySelector("#xhsGrid"),
-  xhsSummary: document.querySelector("#xhsSummary"),
-  xhsSelectAll: document.querySelector("#xhsSelectAll"),
+  pluginNav: document.querySelector("#pluginNav"),
+  pluginTarget: document.querySelector("#pluginTargetInput"),
+  pluginLimit: document.querySelector("#pluginLimitInput"),
+  pluginGrid: document.querySelector("#pluginGrid"),
+  pluginSummary: document.querySelector("#pluginSummary"),
+  pluginSelectAll: document.querySelector("#pluginSelectAll"),
 };
 
 function setStatus(text) {
@@ -71,7 +60,7 @@ function renderArtworkGrid(payload) {
   state.total = payload.total || 0;
   els.grid.innerHTML = "";
   if (!payload.items.length) {
-    els.grid.innerHTML = `<div class="empty">还没有作品。可以先下载作品，或点击“扫描旧目录”导入已有文件。</div>`;
+    els.grid.innerHTML = `<div class="empty">还没有作品。可以先下载作品，或点击"扫描旧目录"导入已有文件。</div>`;
   } else {
     els.grid.append(...payload.items.map(renderArtworkCard));
   }
@@ -247,17 +236,6 @@ async function scanLegacy() {
   await Promise.all([loadTags(), reloadCurrent()]);
 }
 
-async function syncFollowed() {
-  setStatus("正在同步关注作者...");
-  const result = await api("/api/sync/followed", {
-    method: "POST",
-    body: JSON.stringify({ download: true, max_new: 20 }),
-  });
-  const downloaded = result.artists.reduce((sum, item) => sum + (item.downloaded || 0), 0);
-  setStatus(`同步完成：下载 ${downloaded} 个新作品`);
-  await Promise.all([loadFollowed(), loadTags(), reloadCurrent()]);
-}
-
 async function buildThumbnails() {
   setStatus("正在生成缩略图...");
   const result = await api("/api/thumbnails/build?limit=500");
@@ -268,176 +246,70 @@ async function buildThumbnails() {
 async function loadPluginPages() {
   const payload = await api("/api/plugins/pages");
   const pages = payload.items || [];
-  const hasXhs = pages.some((item) => item.view === "xiaohongshu");
-  els.xhsNavButton.classList.toggle("hidden", !hasXhs);
+  els.pluginNav.innerHTML = "";
+  for (const page of pages) {
+    const button = document.createElement("button");
+    button.className = "nav-button";
+    button.dataset.view = page.view;
+    button.textContent = page.title;
+    els.pluginNav.append(button);
+  }
 }
 
-async function importCookieFile(platform, fileInput) {
+async function importCookie() {
+  const fileInput = document.querySelector("#cookieFileInput");
   const file = fileInput.files?.[0];
   if (!file) {
     setStatus("请先选择 cookies.txt 或 json 文件。");
     return;
   }
-  setStatus(`正在导入 ${platform} Cookie...`);
+  setStatus("正在导入 Cookie...");
   const text = await file.text();
   const result = await api("/api/cookies/import", {
     method: "POST",
-    body: JSON.stringify({ platform, text }),
+    body: JSON.stringify({ text }),
   });
   setStatus(`Cookie 导入完成：${result.summary || `${result.count || 0} 个 Cookie`}`);
 }
 
-async function previewXMedia(event) {
+async function previewPlugin(event) {
   event.preventDefault();
-  const username = els.xUsername.value.trim();
-  if (!username) {
-    setStatus("请输入 X 作者名称。");
+  if (!state.activePlugin) {
+    setStatus("请先从左侧选择一个插件页面。");
     return;
   }
-  els.xMediaGrid.innerHTML = `<div class="empty">正在解析 X 媒体页，首次启动 Playwright 可能需要一些时间。</div>`;
-  els.xMediaSummary.textContent = "解析中...";
-  setStatus(`正在解析 X 作者 @${username.replace(/^@/, "")}...`);
-  const payload = await api("/api/x/media/preview", {
+  const target = els.pluginTarget.value.trim();
+  if (!target) {
+    setStatus("请输入链接或关键词。");
+    return;
+  }
+  els.pluginGrid.innerHTML = `<div class="empty">正在解析...</div>`;
+  els.pluginSummary.textContent = "解析中...";
+  const payload = await api("/api/plugin/preview", {
     method: "POST",
     body: JSON.stringify({
-      username,
-      media_type: els.xMediaType.value,
-      max_items: Number(els.xMaxItems.value || 120),
+      plugin: state.activePlugin,
+      target,
+      limit: Number(els.pluginLimit.value || 20),
     }),
   });
-  state.xPreviewId = payload.preview_id;
-  renderXMedia(payload);
-  setStatus(`X 解析完成：${payload.count} 个媒体项`);
+  state.pluginPreviewId = payload.preview_id;
+  renderPluginItems(payload);
+  setStatus(`解析完成：${payload.count} 个项目`);
 }
 
-function renderXMedia(payload) {
-  els.xMediaGrid.innerHTML = "";
-  els.xMediaSummary.textContent = `${payload.username} · ${payload.count} 个媒体项`;
+function renderPluginItems(payload) {
+  els.pluginGrid.innerHTML = "";
+  els.pluginSummary.textContent = `${payload.count} 个项目`;
   if (!payload.items.length) {
-    els.xMediaGrid.innerHTML = `<div class="empty">没有解析到媒体。可能需要先导入 X Cookie，或该作者媒体页为空。</div>`;
+    els.pluginGrid.innerHTML = `<div class="empty">没有解析到内容。</div>`;
     return;
   }
-  els.xMediaGrid.append(...payload.items.map(renderXMediaCard));
-  els.xSelectAll.checked = true;
+  els.pluginGrid.append(...payload.items.map(renderPluginCard));
+  els.pluginSelectAll.checked = true;
 }
 
-function renderXMediaCard(item) {
-  const card = document.createElement("article");
-  card.className = "x-media-card";
-  const preview = item.thumbnail || item.files?.[0]?.url || "";
-  const media = item.kind === "video"
-    ? `<div class="video-tile">VIDEO</div>`
-    : `<img loading="lazy" referrerpolicy="no-referrer" src="${escapeHtml(preview)}" alt="${escapeHtml(item.title || item.id)}">`;
-  card.innerHTML = `
-    <label class="x-check">
-      <input type="checkbox" data-x-id="${escapeHtml(item.id)}" checked />
-      <span>${item.kind === "video" ? "视频" : "图片"}</span>
-    </label>
-    <div class="x-thumb">${media}</div>
-    <div class="artwork-meta">
-      <div class="artwork-title">${escapeHtml(item.title || item.id)}</div>
-      <div class="artwork-sub">@${escapeHtml(item.author_id || "")} · ${item.file_count || 1} 个文件</div>
-    </div>
-  `;
-  return card;
-}
-
-async function downloadXSelected() {
-  if (!state.xPreviewId) {
-    setStatus("请先解析 X 作者媒体。");
-    return;
-  }
-  const selected = [...document.querySelectorAll("[data-x-id]:checked")].map((item) => item.dataset.xId);
-  if (!selected.length) {
-    setStatus("没有选中的媒体。");
-    return;
-  }
-  setStatus(`正在下载 ${selected.length} 个 X 媒体项...`);
-  const result = await api("/api/x/media/download", {
-    method: "POST",
-    body: JSON.stringify({ preview_id: state.xPreviewId, selected_ids: selected }),
-  });
-  setStatus(`X 下载完成：保存 ${result.downloaded_files} 个文件，失败 ${result.failed_items} 项`);
-  await loadXLocalMedia();
-}
-
-async function loadXLocalMedia() {
-  const payload = await api("/api/x/local-media?limit=160");
-  els.xLocalGrid.innerHTML = "";
-  els.xLocalSummary.textContent = `本地 ${payload.total || 0} 个文件`;
-  if (!payload.items.length) {
-    els.xLocalGrid.innerHTML = `<div class="empty">还没有本地 X 图片或视频。</div>`;
-    return;
-  }
-  els.xLocalGrid.append(...payload.items.map(renderXLocalCard));
-}
-
-function renderXLocalCard(item) {
-  const card = document.createElement("article");
-  card.className = "x-media-card";
-  const media = item.kind === "video"
-    ? `<video src="${escapeHtml(item.url)}" muted preload="metadata" controls></video>`
-    : `<img loading="lazy" src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}">`;
-  card.innerHTML = `
-    <label class="x-check">
-      <input type="checkbox" data-x-local-id="${escapeHtml(item.id)}" />
-      <span>${item.kind === "video" ? "视频" : "图片"}</span>
-    </label>
-    <div class="x-thumb">${media}</div>
-    <div class="artwork-meta">
-      <div class="artwork-title">${escapeHtml(item.name)}</div>
-      <div class="artwork-sub">${escapeHtml(item.relative_path)} · ${formatBytes(item.size)}</div>
-    </div>
-  `;
-  return card;
-}
-
-async function deleteXLocalSelected() {
-  const selected = [...document.querySelectorAll("[data-x-local-id]:checked")].map((item) => item.dataset.xLocalId);
-  if (!selected.length) {
-    setStatus("没有选中的本地 X 文件。");
-    return;
-  }
-  setStatus(`正在删除 ${selected.length} 个本地 X 文件...`);
-  const result = await api("/api/x/local-media/delete", {
-    method: "POST",
-    body: JSON.stringify({ ids: selected }),
-  });
-  setStatus(`删除完成：${result.deleted.length} 个，失败 ${result.failed.length} 个`);
-  els.xLocalSelectAll.checked = false;
-  await loadXLocalMedia();
-}
-
-async function previewXhs(event) {
-  event.preventDefault();
-  const target = els.xhsTarget.value.trim();
-  if (!target) {
-    setStatus("请输入小红书关键词或笔记链接。");
-    return;
-  }
-  els.xhsGrid.innerHTML = `<div class="empty">正在解析小红书内容...</div>`;
-  els.xhsSummary.textContent = "解析中...";
-  const payload = await api("/api/xiaohongshu/preview", {
-    method: "POST",
-    body: JSON.stringify({ target, limit: Number(els.xhsLimit.value || 20) }),
-  });
-  state.xhsPreviewId = payload.preview_id;
-  renderXhs(payload);
-  setStatus(`小红书解析完成：${payload.count} 个项目`);
-}
-
-function renderXhs(payload) {
-  els.xhsGrid.innerHTML = "";
-  els.xhsSummary.textContent = `${payload.count} 个项目`;
-  if (!payload.items.length) {
-    els.xhsGrid.innerHTML = `<div class="empty">没有解析到内容，可能需要先登录或换一个关键词。</div>`;
-    return;
-  }
-  els.xhsGrid.append(...payload.items.map(renderXhsCard));
-  els.xhsSelectAll.checked = true;
-}
-
-function renderXhsCard(item) {
+function renderPluginCard(item) {
   const card = document.createElement("article");
   card.className = "x-media-card";
   const preview = item.thumbnail || item.metadata?.cover_url || "";
@@ -446,8 +318,8 @@ function renderXhsCard(item) {
     : `<div class="thumb-placeholder">暂无预览</div>`;
   card.innerHTML = `
     <label class="x-check">
-      <input type="checkbox" data-xhs-id="${escapeHtml(item.id)}" checked />
-      <span>笔记</span>
+      <input type="checkbox" data-plugin-id="${escapeHtml(item.id)}" checked />
+      <span>${item.kind || "项目"}</span>
     </label>
     <div class="x-thumb">${media}</div>
     <div class="artwork-meta">
@@ -458,22 +330,22 @@ function renderXhsCard(item) {
   return card;
 }
 
-async function downloadXhsSelected() {
-  if (!state.xhsPreviewId) {
-    setStatus("请先解析小红书内容。");
+async function downloadPluginSelected() {
+  if (!state.pluginPreviewId) {
+    setStatus("请先解析内容。");
     return;
   }
-  const selected = [...document.querySelectorAll("[data-xhs-id]:checked")].map((item) => item.dataset.xhsId);
+  const selected = [...document.querySelectorAll("[data-plugin-id]:checked")].map((item) => item.dataset.pluginId);
   if (!selected.length) {
-    setStatus("没有选中的小红书项目。");
+    setStatus("没有选中的项目。");
     return;
   }
-  setStatus(`正在下载 ${selected.length} 个小红书项目...`);
-  const result = await api("/api/xiaohongshu/download", {
+  setStatus(`正在下载 ${selected.length} 个项目...`);
+  const result = await api("/api/plugin/download", {
     method: "POST",
-    body: JSON.stringify({ preview_id: state.xhsPreviewId, selected_ids: selected }),
+    body: JSON.stringify({ preview_id: state.pluginPreviewId, selected_ids: selected }),
   });
-  setStatus(`小红书下载完成：保存 ${result.downloaded_files} 个文件，失败 ${result.failed_items} 项`);
+  setStatus(`下载完成：保存 ${result.downloaded_files} 个文件，失败 ${result.failed_items} 项`);
 }
 
 function setActiveView(view) {
@@ -486,10 +358,12 @@ function setActiveView(view) {
     document.querySelector("#artistsView").classList.add("active");
   } else if (view === "sync") {
     document.querySelector("#syncView").classList.add("active");
-  } else if (view === "xMedia") {
-    document.querySelector("#xMediaView").classList.add("active");
-  } else if (view === "xiaohongshu") {
-    document.querySelector("#xiaohongshuView").classList.add("active");
+  } else if (view !== "gallery" && view !== "favorites") {
+    // Plugin view
+    state.activePlugin = view;
+    document.querySelector("#pluginViewTitle").textContent = view;
+    document.querySelector("#pluginViewDesc").textContent = "插件预览和下载";
+    document.querySelector("#pluginView").classList.add("active");
   } else {
     document.querySelector("#galleryView").classList.add("active");
   }
@@ -504,11 +378,8 @@ async function reloadCurrent() {
     await loadArtists();
   } else if (state.view === "sync") {
     await loadFollowed();
-  } else if (state.view === "xMedia") {
-    await loadXLocalMedia();
-    setStatus("X 作者媒体页已就绪。");
-  } else if (state.view === "xiaohongshu") {
-    setStatus("小红书插件页已就绪。");
+  } else if (state.view !== "gallery") {
+    setStatus("插件页已就绪。");
   } else {
     if (!state.artistId) {
       els.title.textContent = state.tag ? `标签：${state.tag}` : "全部作品";
@@ -544,13 +415,7 @@ function stripHtml(value) {
   return tmp.textContent || tmp.innerText || "";
 }
 
-function formatBytes(value) {
-  const size = Number(value || 0);
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
-
+// Event listeners
 document.querySelectorAll(".nav-button").forEach((button) => {
   button.addEventListener("click", async () => {
     setActiveView(button.dataset.view);
@@ -561,6 +426,23 @@ document.querySelectorAll(".nav-button").forEach((button) => {
     await reloadCurrent();
   });
 });
+
+// Re-bind nav buttons after plugin nav changes
+const navObserver = new MutationObserver(() => {
+  document.querySelectorAll(".nav-button").forEach((button) => {
+    if (button._bound) return;
+    button._bound = true;
+    button.addEventListener("click", async () => {
+      setActiveView(button.dataset.view);
+      state.offset = 0;
+      if (state.view !== "gallery") {
+        state.artistId = "";
+      }
+      await reloadCurrent();
+    });
+  });
+});
+navObserver.observe(els.pluginNav, { childList: true, subtree: true });
 
 els.search.addEventListener("input", debounce(async () => {
   state.query = els.search.value.trim();
@@ -612,30 +494,14 @@ document.querySelector("#nextPageButton").addEventListener("click", async () => 
 });
 
 document.querySelector("#scanButton").addEventListener("click", scanLegacy);
-document.querySelector("#syncButton").addEventListener("click", syncFollowed);
 document.querySelector("#buildThumbsButton").addEventListener("click", buildThumbnails);
 document.querySelector("#closeDialogButton").addEventListener("click", () => els.dialog.close());
-document.querySelector("#importPixivCookieButton").addEventListener("click", () => importCookieFile("pixiv", els.pixivCookieFile));
-document.querySelector("#importXCookieButton").addEventListener("click", () => importCookieFile("x", els.xCookieFile));
-document.querySelector("#xMediaForm").addEventListener("submit", previewXMedia);
-document.querySelector("#downloadXSelectedButton").addEventListener("click", downloadXSelected);
-document.querySelector("#refreshXLocalButton").addEventListener("click", loadXLocalMedia);
-document.querySelector("#deleteXLocalButton").addEventListener("click", deleteXLocalSelected);
-document.querySelector("#xhsForm").addEventListener("submit", previewXhs);
-document.querySelector("#downloadXhsSelectedButton").addEventListener("click", downloadXhsSelected);
-els.xSelectAll.addEventListener("change", () => {
-  document.querySelectorAll("[data-x-id]").forEach((item) => {
-    item.checked = els.xSelectAll.checked;
-  });
-});
-els.xLocalSelectAll.addEventListener("change", () => {
-  document.querySelectorAll("[data-x-local-id]").forEach((item) => {
-    item.checked = els.xLocalSelectAll.checked;
-  });
-});
-els.xhsSelectAll.addEventListener("change", () => {
-  document.querySelectorAll("[data-xhs-id]").forEach((item) => {
-    item.checked = els.xhsSelectAll.checked;
+document.querySelector("#importCookieButton").addEventListener("click", importCookie);
+document.querySelector("#pluginForm").addEventListener("submit", previewPlugin);
+document.querySelector("#downloadPluginSelectedButton").addEventListener("click", downloadPluginSelected);
+els.pluginSelectAll.addEventListener("change", () => {
+  document.querySelectorAll("[data-plugin-id]").forEach((item) => {
+    item.checked = els.pluginSelectAll.checked;
   });
 });
 

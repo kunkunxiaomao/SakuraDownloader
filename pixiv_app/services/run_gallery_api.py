@@ -10,7 +10,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run local Sakura gallery API")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--db", default="pixiv_app_library.db")
+    parser.add_argument("--db", default="sakura_library.db")
     parser.add_argument("--thumbnail-dir", default="runtime/thumbnails")
     parser.add_argument("--web-root", default="")
     args = parser.parse_args()

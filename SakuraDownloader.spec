@@ -31,21 +31,13 @@ def tree_datas(source: str, dest: str, suffixes: tuple[str, ...] | None = None):
 
 datas = []
 datas += tree_datas("pixiv_app/webui", "pixiv_app/webui", (".html", ".css", ".js", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico"))
-datas += tree_datas("plugins", "plugins", (".py", ".json", ".md", ".txt"))
 
 
 hiddenimports = [
-    "fingerprint",
-    "proxy_pool",
     "PIL",
     "PIL.Image",
     "customtkinter",
     "requests",
-    "httpx",
-    "playwright",
-    "playwright.async_api",
-    "playwright.sync_api",
-    "pixiv_app.services.x_login_flow",
 ]
 
 

@@ -9,14 +9,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from pixiv_app.core.auth import SessionStore
-from pixiv_app.core.cookie_import import cookie_summary, cookies_to_header, cookies_to_playwright, parse_cookie_text
+from pixiv_app.core.cookie_import import cookie_summary, parse_cookie_text
 from pixiv_app.core.gallery_service import LocalGalleryService
 from pixiv_app.core.library import DEFAULT_LIBRARY_DB
-from pixiv_app.core.paths import app_session_file, downloads_root, plugin_roots, webui_root
+from pixiv_app.core.paths import downloads_root, plugin_roots, webui_root
 from pixiv_app.core.plugin.manager import PluginManager
 from pixiv_app.core.thumbnails import DEFAULT_THUMBNAIL_DIR
-from pixiv_app.core.x_media_service import XMediaService
 
 
 class GalleryApiServer:
@@ -32,7 +30,6 @@ class GalleryApiServer:
         self.host = host
         self.port = port
         self.service = LocalGalleryService(db_path=db_path, thumbnail_dir=thumbnail_dir)
-        self.x_media_service = XMediaService()
         self.plugin_manager = PluginManager(plugin_roots())
         self.plugin_manager.load_all()
         self.plugin_preview_cache: dict[str, tuple[str, list]] = {}
@@ -40,7 +37,6 @@ class GalleryApiServer:
 
     def serve_forever(self) -> None:
         service = self.service
-        x_media_service = self.x_media_service
         plugin_manager = self.plugin_manager
         plugin_preview_cache = self.plugin_preview_cache
         web_root = self.web_root
@@ -50,7 +46,6 @@ class GalleryApiServer:
             (GalleryApiHandler,),
             {
                 "gallery_service": service,
-                "x_media_service": x_media_service,
                 "plugin_manager": plugin_manager,
                 "plugin_preview_cache": plugin_preview_cache,
                 "web_root": web_root,
@@ -66,7 +61,6 @@ class GalleryApiServer:
 
 class GalleryApiHandler(BaseHTTPRequestHandler):
     gallery_service: LocalGalleryService
-    x_media_service: XMediaService
     plugin_manager: PluginManager
     plugin_preview_cache: dict[str, tuple[str, list]]
     web_root: Path
@@ -101,26 +95,10 @@ class GalleryApiHandler(BaseHTTPRequestHandler):
                 self._send_json({"items": self.gallery_service.build_missing_thumbnails(limit=_int(query, "limit", 200))})
             elif parsed.path == "/api/import/legacy":
                 self._send_json(self.gallery_service.scan_legacy_downloads(root=_first(query, "root", "Sakura_Downloads")))
-            elif parsed.path == "/api/sync/followed":
-                self._send_json(
-                    self.gallery_service.sync_followed_artists(
-                        max_new_per_artist=_int(query, "max_new", 20),
-                        download=_bool(query, "download", True),
-                    )
-                )
-            elif parsed.path == "/api/x/local-media":
-                self._send_json(
-                    self.x_media_service.list_local_media(
-                        limit=_int(query, "limit", 160),
-                        offset=_int(query, "offset", 0),
-                    )
-                )
             elif parsed.path.startswith("/media/thumbnail/"):
                 self._send_file(self._resolve_media_path(parsed.path, thumbnail=True))
             elif parsed.path.startswith("/media/source/"):
                 self._send_file(self._resolve_media_path(parsed.path, thumbnail=False))
-            elif parsed.path.startswith("/media/x-local/"):
-                self._send_file(self.x_media_service.resolve_local_media(parsed.path.rsplit("/", 1)[-1]))
             else:
                 self._send_json({"error": "not found"}, status=404)
         except ValueError as exc:
@@ -150,42 +128,11 @@ class GalleryApiHandler(BaseHTTPRequestHandler):
                 )
             elif parsed.path == "/api/import/legacy":
                 self._send_json(self.gallery_service.scan_legacy_downloads(root=str(payload.get("root", "Sakura_Downloads"))))
-            elif parsed.path == "/api/sync/followed":
-                self._send_json(
-                    self.gallery_service.sync_followed_artists(
-                        cookie=str(payload.get("cookie", "")),
-                        max_new_per_artist=int(payload.get("max_new", 20)),
-                        download=bool(payload.get("download", True)),
-                    )
-                )
             elif parsed.path == "/api/cookies/import":
                 self._send_json(self._handle_cookie_import(payload))
-            elif parsed.path == "/api/x/media/preview":
-                self._send_json(
-                    self.x_media_service.preview_author_media(
-                        str(payload.get("username", "")),
-                        media_type=str(payload.get("media_type", "all")),
-                        max_items=int(payload.get("max_items", 120)),
-                    )
-                )
-            elif parsed.path == "/api/x/media/download":
-                selected_ids = payload.get("selected_ids")
-                if selected_ids is not None and not isinstance(selected_ids, list):
-                    raise ValueError("selected_ids 必须是数组。")
-                self._send_json(
-                    self.x_media_service.download_preview(
-                        str(payload.get("preview_id", "")),
-                        selected_ids=[str(item) for item in selected_ids] if selected_ids is not None else None,
-                    )
-                )
-            elif parsed.path == "/api/x/local-media/delete":
-                media_ids = payload.get("ids", [])
-                if not isinstance(media_ids, list):
-                    raise ValueError("ids 必须是数组。")
-                self._send_json(self.x_media_service.delete_local_media([str(item) for item in media_ids]))
-            elif parsed.path == "/api/xiaohongshu/preview":
-                self._send_json(self._handle_plugin_preview("小红书", payload))
-            elif parsed.path == "/api/xiaohongshu/download":
+            elif parsed.path == "/api/plugin/preview":
+                self._send_json(self._handle_plugin_preview_generic(payload))
+            elif parsed.path == "/api/plugin/download":
                 self._send_json(self._handle_plugin_download(payload))
             else:
                 self._send_json({"error": "not found"}, status=404)
@@ -218,29 +165,27 @@ class GalleryApiHandler(BaseHTTPRequestHandler):
     def _handle_plugin_pages(self) -> dict:
         self.plugin_manager.reload_all_from_disk()
         items = []
-        if "X" in self.plugin_manager.plugins:
+        for name, plugin in self.plugin_manager.plugins.items():
+            available = True
+            try:
+                available = bool(plugin.validate())
+            except Exception:
+                available = False
             items.append(
                 {
-                    "id": "x-media",
-                    "view": "xMedia",
-                    "title": "X 作者媒体",
-                    "description": "按作者名称解析图片或视频并选择下载",
-                }
-            )
-        if "小红书" in self.plugin_manager.plugins:
-            plugin = self.plugin_manager.plugins["小红书"]
-            items.append(
-                {
-                    "id": "xiaohongshu",
-                    "view": "xiaohongshu",
-                    "title": "小红书",
-                    "description": "搜索关键词或解析笔记链接，预览后下载",
-                    "available": bool(plugin.validate()),
+                    "id": name.lower().replace(" ", "-"),
+                    "view": name.lower().replace(" ", "-"),
+                    "title": name,
+                    "description": getattr(plugin, "description", ""),
+                    "available": available,
                 }
             )
         return {"items": items}
 
-    def _handle_plugin_preview(self, plugin_name: str, payload: dict) -> dict:
+    def _handle_plugin_preview_generic(self, payload: dict) -> dict:
+        plugin_name = str(payload.get("plugin", "")).strip()
+        if not plugin_name:
+            raise ValueError("请指定 plugin 参数。")
         plugin = self.plugin_manager.plugins.get(plugin_name)
         if plugin is None:
             raise ValueError(f"未安装插件: {plugin_name}")
@@ -320,27 +265,9 @@ class GalleryApiHandler(BaseHTTPRequestHandler):
         return media_path
 
     def _handle_cookie_import(self, payload: dict) -> dict:
-        platform = str(payload.get("platform", "")).strip().lower()
         text = str(payload.get("text", ""))
-        if platform in {"pixiv", "px"}:
-            cookies = parse_cookie_text(text)
-            pixiv_cookies = cookies_to_playwright(cookies, ("pixiv.net",))
-            header = cookies_to_header(pixiv_cookies, ("pixiv.net",))
-            SessionStore(app_session_file()).save(
-                {
-                    "login_mode": "cookie",
-                    "cookie": header,
-                    "cookie_json": pixiv_cookies,
-                    "login_id": "",
-                    "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            )
-            return {"platform": "pixiv", "count": len(pixiv_cookies), "summary": cookie_summary(pixiv_cookies)}
-        if platform in {"x", "twitter"}:
-            result = self.x_media_service.import_cookie_text(text)
-            result["platform"] = "x"
-            return result
-        raise ValueError("platform 必须是 pixiv 或 x。")
+        cookies = parse_cookie_text(text)
+        return {"count": len(cookies), "summary": cookie_summary(cookies)}
 
     def _send_json(self, payload: dict | list, *, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

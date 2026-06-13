@@ -8,85 +8,44 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox
-from urllib.parse import quote
 
 import customtkinter as ctk
 
-from pixiv_app.core.auth import AuthResult, PixivAuthClient, SessionStore
 from pixiv_app.core.cookie_import import (
     cookie_domains,
     cookie_summary,
-    cookies_to_header,
-    cookies_to_playwright,
-    has_cookie_domain,
     parse_cookie_text,
-    save_playwright_cookies,
-)
-from pixiv_app.core.downloader import (
-    DownloadResult,
-    PixivRequestError,
-    download_illust,
-    download_keyword_works,
-    download_novel,
-    download_user_works,
-    fetch_user_work_ids,
-    parse_pixiv_target,
-    resolve_workers,
-    search_illust_ids_by_keyword,
 )
 from pixiv_app.core.plugin.manager import PluginManager
-from pixiv_app.core.paths import app_session_file, downloads_root, plugin_roots, plugins_root, runtime_path
+from pixiv_app.core.paths import downloads_root, plugin_roots
 from pixiv_app.core.proxy_pool import ProxyInfo, ProxyPool, QuakeClient, parse_proxy_text
 from pixiv_app.gui.proxy_dialog import ProxyDialog
-from pixiv_app.runtime.enqueue import collect_task_specs, enqueue_specs_to_library
-from pixiv_app.runtime.worker_loop import run_queue_until_idle
 from pixiv_app.services.gallery_api import GalleryApiServer
-from pixiv_app.tasks.parser import parse_batch_for_mode
 
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
 
+class DownloadResult:
+    """Lightweight result struct (avoids dependency on deleted pixiv downloader)."""
+    def __init__(self, *, work_id: int, total_pages: int, downloaded_pages: int,
+                 skipped_pages: int, failed_pages: int, ok: bool, message: str):
+        self.work_id = work_id
+        self.total_pages = total_pages
+        self.downloaded_pages = downloaded_pages
+        self.skipped_pages = skipped_pages
+        self.failed_pages = failed_pages
+        self.ok = ok
+        self.message = message
+
+
 class SakuraDownloaderGUI:
-    TARGET_MODE_MAP = {
-        "作者全部作品": "user",
-        "单个作品": "illust",
-        "文章/小说": "novel",
-        "关键词图片": "keyword",
-    }
-    X_TARGET_MODE_MAP = {
-        "作者媒体": "x_user",
-        "单个推文": "x_status",
-        "搜索词媒体": "x_keyword",
-    }
-    XHS_TARGET_MODE_MAP = {
-        "搜索关键词": "xhs_keyword",
-        "单篇笔记": "xhs_note",
-        "链接解析": "xhs_link",
-    }
-    GENERIC_PLUGIN_MODE_MAP = {
+    PLUGIN_MODE_MAP = {
         "自动解析": "plugin_auto",
     }
-    PLACEHOLDER_MAP = {
-        "user": "请输入作者 ID，或作品链接自动反查作者",
-        "illust": "请输入作品 ID 或作品链接",
-        "novel": "请输入小说 ID 或小说链接",
-        "keyword": "请输入关键词，例如 初音未来、猫耳",
-    }
-    X_PLACEHOLDER_MAP = {
-        "x_user": "请输入 X 作者名，例如 nasa 或 @nasa",
-        "x_status": "请输入 X / Twitter 单条推文链接",
-        "x_keyword": "请输入搜索词，例如 anime art filter:media",
-    }
-    XHS_PLACEHOLDER_MAP = {
-        "xhs_keyword": "请输入小红书搜索关键词，例如 穿搭、插画、摄影",
-        "xhs_note": "请输入小红书笔记链接，例如 https://www.xiaohongshu.com/explore/...",
-        "xhs_link": "请输入小红书链接或 xhslink.com 分享链接",
-    }
     LOGIN_MODE_MAP = {
-        "Cookie 登录": "cookie",
-        "账号密码登录": "password",
+        "Cookie 导入": "cookie",
     }
 
     BG_COLOR = "#eef7ff"
@@ -133,25 +92,16 @@ class SakuraDownloaderGUI:
             "countries_text": "US,JP,KR,SG,HK,TW,DE,FR,GB,CA,AU",
         }
         self.proxy_summary_var = ctk.StringVar(value="未启用代理池")
-        self.use_queue_var = ctk.BooleanVar(value=True)
-        self.incremental_wm_var = ctk.BooleanVar(value=True)
-        self.platform_var = ctk.StringVar(value="Pixiv")
-        self.target_mode_var = ctk.StringVar(value="作者全部作品")
-        self.login_mode_var = ctk.StringVar(value="Cookie 登录")
-        self.auth_status_var = ctk.StringVar(value="未登录，推荐导入 cookies.txt；也可尝试账号密码登录。")
+        self.target_mode_var = ctk.StringVar(value="自动解析")
+        self.login_mode_var = ctk.StringVar(value="Cookie 导入")
+        self.auth_status_var = ctk.StringVar(value="推荐导入 cookies.txt 以使用需要登录的插件。")
         self.cookie_json: list[dict] = []
-        self.cookie_header = ""
-
-        self.auth_client = PixivAuthClient()
-        self.session_store = SessionStore(app_session_file())
 
         self.setup_ui()
         self.process_ui_queue()
-        self.update_target_mode_ui(self.target_mode_var.get())
-        self.update_crawler_platform_ui()
-        self.update_login_mode_ui(self.login_mode_var.get())
-        self.load_saved_session(silent=True)
-        self.root.after(500, self.show_login_warning)
+        self.update_target_mode_ui()
+        self.update_login_mode_ui()
+        self.root.after(500, self.show_usage_notice)
 
     def setup_ui(self) -> None:
         self.create_header()
@@ -172,7 +122,7 @@ class SakuraDownloaderGUI:
         sub.pack(fill="x", padx=28, pady=(0, 14))
         ctk.CTkLabel(
             sub,
-            text="支持 Pixiv、X / Twitter、小红书与可导入 Python 插件的本地媒体下载。",
+            text="插件驱动的本地媒体下载框架。导入 Python 插件即可支持任意站点。",
             text_color=self.MUTED_COLOR,
             font=ctk.CTkFont(size=14),
         ).pack(side="left", anchor="w")
@@ -227,24 +177,9 @@ class SakuraDownloaderGUI:
         return card
 
     def create_auth_card(self, parent) -> None:
-        card = self.make_card(parent, "登录方式", "推荐导入 Get cookies.txt 导出的 txt/json 文件；程序会解析成 JSON 保存，抓取时再交给后端请求层使用。")
+        card = self.make_card(parent, "Cookie 导入", "导入 Get cookies.txt 导出的 txt/json 文件，供需要登录的插件使用。")
 
-        mode_row = ctk.CTkFrame(card, fg_color="transparent")
-        mode_row.pack(fill="x", padx=20, pady=(0, 12))
-        ctk.CTkLabel(mode_row, text="方式", text_color=self.TEXT_COLOR, font=ctk.CTkFont(size=14, weight="bold"), width=78).pack(
-            side="left", padx=(0, 10)
-        )
-        self.login_mode_menu = ctk.CTkOptionMenu(
-            mode_row,
-            values=list(self.LOGIN_MODE_MAP.keys()),
-            variable=self.login_mode_var,
-            command=self.update_login_mode_ui,
-            width=220,
-        )
-        self.login_mode_menu.pack(side="left")
-
-        self.cookie_frame = ctk.CTkFrame(card, fg_color="transparent")
-        cookie_row = ctk.CTkFrame(self.cookie_frame, fg_color="transparent")
+        cookie_row = ctk.CTkFrame(card, fg_color="transparent")
         cookie_row.pack(fill="x", padx=20, pady=(0, 14))
         ctk.CTkLabel(
             cookie_row,
@@ -267,30 +202,6 @@ class SakuraDownloaderGUI:
         )
         self.cookie_import_button.pack(side="left", fill="x", expand=True)
 
-        self.password_frame = ctk.CTkFrame(card, fg_color="transparent")
-        self.login_id_entry = self.create_labeled_entry(
-            self.password_frame,
-            "账号",
-            "请输入邮箱、Pixiv ID 或登录账号",
-        )
-        self.password_entry = self.create_labeled_entry(
-            self.password_frame,
-            "密码",
-            "请输入密码；不会写入源码，只用于本次尝试登录",
-            show="*",
-        )
-
-        action_row = ctk.CTkFrame(card, fg_color="transparent")
-        action_row.pack(fill="x", padx=20, pady=(4, 10))
-        self.load_session_button = ctk.CTkButton(action_row, text="自动载入", width=110, command=self.load_saved_session)
-        self.load_session_button.pack(side="left")
-        self.validate_session_button = ctk.CTkButton(action_row, text="检测会话", width=110, command=self.validate_session)
-        self.validate_session_button.pack(side="left", padx=(10, 0))
-        self.login_button = ctk.CTkButton(action_row, text="尝试登录", width=110, command=self.login_with_password)
-        self.login_button.pack(side="left", padx=(10, 0))
-        self.save_session_button = ctk.CTkButton(action_row, text="保存会话", width=110, command=self.save_session)
-        self.save_session_button.pack(side="left", padx=(10, 0))
-
         status_row = ctk.CTkFrame(card, fg_color="#f7fbff", corner_radius=12)
         status_row.pack(fill="x", padx=20, pady=(0, 18))
         ctk.CTkLabel(
@@ -306,22 +217,8 @@ class SakuraDownloaderGUI:
         card = self.make_card(
             parent,
             "抓取目标",
-            "先选择平台：Pixiv 使用下方模式与队列；插件自动识别会按 can_handle() 匹配已导入插件。",
+            "输入链接或关键词，程序会自动匹配已导入插件的 can_handle() 进行解析和下载。",
         )
-
-        plat_row = ctk.CTkFrame(card, fg_color="transparent")
-        plat_row.pack(fill="x", padx=20, pady=(0, 12))
-        ctk.CTkLabel(plat_row, text="平台", text_color=self.TEXT_COLOR, font=ctk.CTkFont(size=14, weight="bold"), width=78).pack(
-            side="left", padx=(0, 10)
-        )
-        self.platform_menu = ctk.CTkOptionMenu(
-            plat_row,
-            values=["Pixiv", "X / Twitter", "小红书", "插件自动识别"],
-            variable=self.platform_var,
-            command=self.update_crawler_platform_ui,
-            width=200,
-        )
-        self.platform_menu.pack(side="left")
 
         mode_row = ctk.CTkFrame(card, fg_color="transparent")
         mode_row.pack(fill="x", padx=20, pady=(0, 12))
@@ -330,23 +227,27 @@ class SakuraDownloaderGUI:
         )
         self.target_mode_menu = ctk.CTkOptionMenu(
             mode_row,
-            values=list(self.TARGET_MODE_MAP.keys()),
+            values=list(self.PLUGIN_MODE_MAP.keys()),
             variable=self.target_mode_var,
             command=self.update_target_mode_ui,
             width=220,
         )
         self.target_mode_menu.pack(side="left")
 
-        self.target_entry = self.create_labeled_entry(card, "目标", self.PLACEHOLDER_MAP["user"])
-        self.mode_hint_label = ctk.CTkLabel(card, text="", text_color=self.MUTED_COLOR, font=ctk.CTkFont(size=12), justify="left")
+        self.target_entry = self.create_labeled_entry(card, "目标", "输入链接、ID 或关键词；程序会自动匹配已导入插件的 can_handle()")
+        self.mode_hint_label = ctk.CTkLabel(
+            card,
+            text="自动解析：从已导入插件中选择第一个 can_handle() 返回 True 的插件。",
+            text_color=self.MUTED_COLOR,
+            font=ctk.CTkFont(size=12),
+            justify="left",
+        )
         self.mode_hint_label.pack(anchor="w", padx=20, pady=(0, 10))
 
         keyword_row = ctk.CTkFrame(card, fg_color="transparent")
         keyword_row.pack(fill="x", padx=20, pady=(0, 12))
-        self.keyword_limit_label = ctk.CTkLabel(keyword_row, text="关键词数量", text_color=self.TEXT_COLOR, font=ctk.CTkFont(size=14, weight="bold"), width=78)
-        self.keyword_limit_label.pack(
-            side="left", padx=(0, 10)
-        )
+        self.keyword_limit_label = ctk.CTkLabel(keyword_row, text="抓取数量", text_color=self.TEXT_COLOR, font=ctk.CTkFont(size=14, weight="bold"), width=78)
+        self.keyword_limit_label.pack(side="left", padx=(0, 10))
         self.keyword_limit_entry = ctk.CTkEntry(
             keyword_row,
             width=120,
@@ -388,32 +289,13 @@ class SakuraDownloaderGUI:
             side="left", padx=10
         )
 
-        opt = ctk.CTkFrame(card, fg_color="transparent")
-        opt.pack(fill="x", padx=20, pady=(0, 14))
-        self.use_queue_checkbox = ctk.CTkCheckBox(
-            opt,
-            text="统一任务队列（SQLite 状态）",
-            variable=self.use_queue_var,
-            font=ctk.CTkFont(size=13),
-            text_color=self.TEXT_COLOR,
-        )
-        self.use_queue_checkbox.pack(side="left", padx=(0, 18))
-        self.incremental_wm_checkbox = ctk.CTkCheckBox(
-            opt,
-            text="作者增量同步（水印）",
-            variable=self.incremental_wm_var,
-            font=ctk.CTkFont(size=13),
-            text_color=self.TEXT_COLOR,
-        )
-        self.incremental_wm_checkbox.pack(side="left")
-
     def create_tips_card(self, parent) -> None:
         card = self.make_card(parent, "使用说明")
         for tip in [
-            "Cookie 登录最稳，账号密码登录可能被 Pixiv 额外验证拦截。",
-            "“开始爬取并预校验”会把可用代理自动写回代理列表。",
-            "关键词图片会先搜索作品列表，再按数量限制批量下载。",
-            "开启任务队列后支持多行 / 逗号混合输入与 #标签；作者模式可配合水印只抓新图。",
+            "导入 Cookie 后，需要登录的插件可以读取这些 Cookie 进行鉴权。",
+            "「插件管理」中可以导入自定义 Python 插件，扩展下载能力。",
+            "「打开缩略图墙」可浏览本地已下载的作品，支持标签和搜索。",
+            "代理池可以在「代理设置」中配置，支持手动代理和 Quake API 自动获取。",
         ]:
             ctk.CTkLabel(card, text=f"- {tip}", text_color=self.MUTED_COLOR, font=ctk.CTkFont(size=13), justify="left").pack(
                 anchor="w", padx=20, pady=(0, 8)
@@ -539,6 +421,8 @@ class SakuraDownloaderGUI:
         label.pack(anchor="w", padx=16, pady=(2, 16))
         return label
 
+    # ── UI queue ──────────────────────────────────────────────
+
     def process_ui_queue(self) -> None:
         while True:
             try:
@@ -555,173 +439,89 @@ class SakuraDownloaderGUI:
         self.log_text.insert("end", f"[{time.strftime('%H:%M:%S')}] {message}\n")
         self.log_text.see("end")
 
+    # ── Input state ───────────────────────────────────────────
+
     def set_inputs_state(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
         self.target_entry.configure(state=state)
         self.proxy_button.configure(state=state)
         self.target_mode_menu.configure(state=state)
-        self.login_mode_menu.configure(state=state)
         if hasattr(self, "cookie_import_button"):
             self.cookie_import_button.configure(state=state)
-        self.login_id_entry.configure(state=state)
-        self.password_entry.configure(state=state)
-        self.load_session_button.configure(state=state)
-        self.validate_session_button.configure(state=state)
-        self.login_button.configure(state=state)
-        self.save_session_button.configure(state=state)
-        self.keyword_limit_entry.configure(
-            state=state if self.TARGET_MODE_MAP.get(self.target_mode_var.get(), "user") == "keyword" else "disabled"
+        self.keyword_limit_entry.configure(state=state)
+
+    def update_login_mode_ui(self, _choice: str | None = None) -> None:
+        pass  # Only one mode; no-op
+
+    def update_target_mode_ui(self, _choice: str | None = None) -> None:
+        self.target_entry.configure(placeholder_text="输入链接、ID 或关键词；程序会自动匹配已导入插件的 can_handle()")
+        self.keyword_limit_label.configure(text="抓取数量")
+        self.keyword_limit_entry.configure(state="normal")
+        self.mode_hint_label.configure(
+            text="自动解析：从已导入插件中选择第一个 can_handle() 返回 True 的插件。",
+            text_color=self.MUTED_COLOR,
         )
-        if hasattr(self, "use_queue_checkbox"):
-            self.use_queue_checkbox.configure(state=state)
-        if hasattr(self, "incremental_wm_checkbox"):
-            self.incremental_wm_checkbox.configure(state=state)
-        if hasattr(self, "platform_menu"):
-            self.platform_menu.configure(state=state)
-            if state == "normal":
-                self.update_crawler_platform_ui()
 
-    def update_login_mode_ui(self, display_mode: str) -> None:
-        mode = self.LOGIN_MODE_MAP.get(display_mode, "cookie")
-        self.cookie_frame.pack_forget()
-        self.password_frame.pack_forget()
-        self.login_button.configure(state="normal" if mode == "password" else "disabled")
-        self.validate_session_button.configure(state="normal")
-        if mode == "cookie":
-            self.cookie_frame.pack(fill="x", pady=(0, 0))
-        else:
-            self.password_frame.pack(fill="x", pady=(0, 0))
+    # ── Cookie import ─────────────────────────────────────────
 
-    def update_crawler_platform_ui(self, _choice: str | None = None) -> None:
-        platform = self.platform_var.get()
-        is_pixiv = platform == "Pixiv"
-        if is_pixiv:
-            values = list(self.TARGET_MODE_MAP.keys())
-        elif platform == "小红书":
-            values = list(self.XHS_TARGET_MODE_MAP.keys())
-        elif platform == "插件自动识别":
-            values = list(self.GENERIC_PLUGIN_MODE_MAP.keys())
-        else:
-            values = list(self.X_TARGET_MODE_MAP.keys())
-        self.target_mode_menu.configure(values=values, state="normal")
-        if self.target_mode_var.get() not in values:
-            self.target_mode_var.set(values[0])
-        self.keyword_row_frame.configure(fg_color="transparent")
-        if is_pixiv:
-            self.update_target_mode_ui(self.target_mode_var.get())
-            self.use_queue_checkbox.configure(state="normal")
-            self.incremental_wm_checkbox.configure(state="normal")
-        else:
-            self.update_target_mode_ui(self.target_mode_var.get())
-            self.use_queue_checkbox.configure(state="disabled")
-            self.incremental_wm_checkbox.configure(state="disabled")
-
-    def update_target_mode_ui(self, display_mode: str) -> None:
-        platform = self.platform_var.get()
-        if platform == "插件自动识别":
-            self.target_entry.configure(placeholder_text="输入链接、ID 或关键词；程序会自动匹配已导入插件的 can_handle()")
-            self.keyword_limit_label.configure(text="抓取数量")
-            self.keyword_limit_entry.configure(state="normal")
-            self.mode_hint_label.configure(
-                text="自动解析：从内置插件和用户导入插件中选择第一个 can_handle() 返回 True 的插件。",
-                text_color=self.MUTED_COLOR,
-            )
+    def import_cookie_txt(self) -> None:
+        path = filedialog.askopenfilename(
+            title="导入 Cookie txt",
+            filetypes=[
+                ("Cookie files", "*.txt *.json"),
+                ("Text files", "*.txt"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
             return
-        if platform == "小红书":
-            mode = self.XHS_TARGET_MODE_MAP.get(display_mode, "xhs_keyword")
-            self.target_entry.configure(placeholder_text=self.XHS_PLACEHOLDER_MAP[mode])
-            self.keyword_limit_label.configure(text="抓取数量")
-            self.keyword_limit_entry.configure(state="normal" if mode == "xhs_keyword" else "disabled")
-            hints = {
-                "xhs_keyword": "搜索关键词：解析搜索结果里的笔记封面，下载时会进入笔记抓取图片。",
-                "xhs_note": "单篇笔记：解析一条笔记里的图片，请输入完整小红书笔记链接。",
-                "xhs_link": "链接解析：支持 xiaohongshu.com 和 xhslink.com 分享链接。",
-            }
-            self.mode_hint_label.configure(text=hints[mode], text_color=self.MUTED_COLOR)
+        try:
+            text = Path(path).read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        try:
+            cookies = parse_cookie_text(text)
+        except Exception as exc:
+            messagebox.showerror("导入失败", str(exc))
             return
-        if platform != "Pixiv":
-            mode = self.X_TARGET_MODE_MAP.get(display_mode, "x_user")
-            self.target_entry.configure(placeholder_text=self.X_PLACEHOLDER_MAP[mode])
-            self.keyword_limit_label.configure(text="抓取数量")
-            self.keyword_limit_entry.configure(state="normal" if mode in {"x_user", "x_keyword"} else "disabled")
-            hints = {
-                "x_user": "作者媒体：输入作者名会自动访问该作者 /media 页，解析图片和视频。",
-                "x_status": "单个推文：解析一条推文里的图片或视频，请输入完整推文链接。",
-                "x_keyword": "搜索词媒体：自动打开 X 搜索媒体页，抓取搜索结果里的图片或视频。",
-            }
-            self.mode_hint_label.configure(text=hints[mode], text_color=self.MUTED_COLOR)
-            return
-        mode = self.TARGET_MODE_MAP.get(display_mode, "user")
-        self.keyword_limit_label.configure(text="关键词数量")
-        self.target_entry.configure(placeholder_text=self.PLACEHOLDER_MAP[mode])
-        self.keyword_limit_entry.configure(state="normal" if mode == "keyword" else "disabled")
-        hints = {
-            "user": "作者全部作品：支持作者 ID，也支持先粘贴任意作品链接自动反查作者并批量下载。",
-            "illust": "单个作品：只抓取这一条作品的原图，多图会全部下载。",
-            "novel": "文章/小说：保存为 TXT 文件，方便后续整理和导出。",
-            "keyword": "关键词图片：按搜索结果抓图，数量由“关键词数量”控制。",
-        }
-        self.mode_hint_label.configure(text=hints[mode])
 
-    def get_active_cookie(self) -> str:
-        payload = self.session_store.load()
-        cookies = self.cookie_json or payload.get("cookie_json") or []
-        if cookies:
-            try:
-                return cookies_to_header(list(cookies), ("pixiv.net",))
-            except Exception:
-                pass
-        if self.cookie_header:
-            return self.cookie_header
-        return str(payload.get("cookie", "")).strip()
-
-    def save_session(self) -> None:
-        cookie = self.get_active_cookie()
-        if not cookie and not self.cookie_json:
-            messagebox.showerror("保存失败", "当前没有可保存的 Cookie。")
-            return
-        payload = {
-            "login_mode": self.LOGIN_MODE_MAP.get(self.login_mode_var.get(), "cookie"),
-            "cookie": cookie,
-            "cookie_json": self.cookie_json,
-            "login_id": self.login_id_entry.get().strip(),
-            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        self.session_store.save(payload)
-        self.auth_status_var.set("会话已保存，下次启动可自动载入。")
-        self.log_message("已保存本地会话。")
+        self.cookie_json = cookies
+        summary = cookie_summary(cookies)
+        self.set_cookie_indicator(f"已导入 {Path(path).name}（{len(cookies)} 个 Cookie）")
+        self.auth_status_var.set(f"已从 txt 导入 Cookie：{summary}")
+        self.log_message(f"已导入 Cookie txt: {path} ({summary})")
+        domain_note = ", ".join(cookie_domains(cookies)[:4])
+        messagebox.showinfo("导入完成", f"已解析 Cookie。\n{summary}\n域名: {domain_note}")
 
     def set_cookie_indicator(self, text: str) -> None:
         self.cookie_import_button.configure(text=text)
 
-    def show_login_warning(self) -> None:
-        if getattr(self, "_login_notice_window", None) is not None:
+    # ── Usage notice ──────────────────────────────────────────
+
+    def show_usage_notice(self) -> None:
+        if getattr(self, "_notice_window", None) is not None:
             try:
-                self._login_notice_window.focus()
+                self._notice_window.focus()
                 return
             except Exception:
-                self._login_notice_window = None
+                self._notice_window = None
 
         pages = [
             (
-                "【登录功能说明】",
+                "【使用说明】",
                 [
-                    "当前登录功能仍在优化中，建议使用 cookie 导入方式进行登录。",
-                    "推荐使用浏览器插件（如 Get cookies.txt）导出登录态，并导入本工具使用。",
+                    "Sakura 下载器是一个插件驱动的本地媒体下载框架。",
+                    "通过导入 Python 插件，可以扩展对任意站点的支持。",
+                    "点击「插件管理」导入自定义插件，或使用「生成模板」快速创建新插件。",
                 ],
             ),
             (
-              "【小红书插件说明】",
-                ["当前小红书插件有些许问题，模拟爬取小红书时，会404 NOT FOUND",
-                 "作者会持续优化，还请耐心等待....."],
-            ),
-            (
-                "【使用建议】",
+                "【Cookie 导入】",
                 [
-                    "1. 建议在已正常登录 Pixiv / X（Twitter）的浏览器环境下获取 cookie",
-                    "2. 保持浏览器在后台请勿关闭",
-                    "3. cookie 仅用于维持登录状态，请定期更新（例如失效时重新导入）",
-                    "4. 请避免在短时间内进行高频或大规模下载操作，以降低触发平台限制的风险",
+                    "1. 使用浏览器插件（如 Get cookies.txt）导出登录态",
+                    "2. 点击「导入 cookies.txt / json」导入 Cookie",
+                    "3. 插件可通过 cookie_json 属性读取登录信息",
                 ],
             ),
             (
@@ -736,10 +536,9 @@ class SakuraDownloaderGUI:
                 "【用户须知】",
                 [
                     "爬虫运行有风险，请合理使用",
-                    "本工具只做研究学习使用，严谨非法搬运",
+                    "本工具只做研究学习使用，严禁非法搬运",
                     "若遇到问题，请联系作者",
                     "QQ:2811043066",
-                    "使用方法请前往博客",
                     "博客:http://blog.kunkunxiaomao.top",
                 ]
             )
@@ -749,7 +548,7 @@ class SakuraDownloaderGUI:
         notice_height = 520
 
         win = ctk.CTkToplevel(self.root)
-        self._login_notice_window = win
+        self._notice_window = win
         win.title("用户须知")
         win.geometry(f"{notice_width}x{notice_height}")
         win.minsize(620, 480)
@@ -758,7 +557,7 @@ class SakuraDownloaderGUI:
         win.grab_set()
 
         def close_notice() -> None:
-            self._login_notice_window = None
+            self._notice_window = None
             win.destroy()
 
         win.protocol("WM_DELETE_WINDOW", close_notice)
@@ -882,141 +681,63 @@ class SakuraDownloaderGUI:
         win.geometry(f"{notice_width}x{notice_height}+{x}+{y}")
         render_page()
 
-    def import_cookie_txt(self) -> None:
-        path = filedialog.askopenfilename(
-            title="导入 Cookie txt",
-            filetypes=[
-                ("Cookie files", "*.txt *.json"),
-                ("Text files", "*.txt"),
-                ("JSON files", "*.json"),
-                ("All files", "*.*"),
-            ],
-        )
-        if not path:
-            return
-        try:
-            text = Path(path).read_text(encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
-        try:
-            cookies = parse_cookie_text(text)
-        except Exception as exc:
-            messagebox.showerror("导入失败", str(exc))
-            return
-
-        pixiv_cookies = cookies_to_playwright(cookies, ("pixiv.net",)) if has_cookie_domain(cookies, ("pixiv.net",)) else []
-        x_cookies = cookies_to_playwright(cookies, ("x.com", "twitter.com")) if has_cookie_domain(cookies, ("x.com", "twitter.com")) else []
-        xhs_cookies = (
-            cookies_to_playwright(cookies, ("xiaohongshu.com", "xhslink.com"))
-            if has_cookie_domain(cookies, ("xiaohongshu.com", "xhslink.com"))
-            else []
-        )
-
-        self.cookie_json = cookies
-        self.cookie_header = cookies_to_header(pixiv_cookies, ("pixiv.net",)) if pixiv_cookies else ""
-        self.login_mode_var.set("Cookie 登录")
-        self.update_login_mode_ui("Cookie 登录")
-        summary = cookie_summary(cookies)
-        if x_cookies:
-            save_playwright_cookies(x_cookies, runtime_path("x_cookies.json"))
-        if xhs_cookies:
-            save_playwright_cookies(xhs_cookies, runtime_path("xiaohongshu_cookies.json"))
-        self.set_cookie_indicator(f"已导入 {Path(path).name}（{len(cookies)} 个 Cookie）")
-        self.save_session()
-        if pixiv_cookies:
-            self.auth_status_var.set(f"已从 txt 导入 Pixiv Cookie：{summary}")
-        elif x_cookies:
-            self.auth_status_var.set(f"已从 txt 导入 X Cookie：{summary}；已同步到 runtime/x_cookies.json")
-        elif xhs_cookies:
-            self.auth_status_var.set(f"已从 txt 导入小红书 Cookie：{summary}；已同步到 runtime/xiaohongshu_cookies.json")
-        else:
-            self.auth_status_var.set(f"已从 txt 导入 Cookie：{summary}")
-        self.log_message(f"已导入 Cookie txt: {path} ({summary})")
-        domain_note = ", ".join(cookie_domains(cookies)[:4])
-        extras = []
-        if x_cookies:
-            extras.append("X Cookie 到 runtime/x_cookies.json")
-        if xhs_cookies:
-            extras.append("小红书 Cookie 到 runtime/xiaohongshu_cookies.json")
-        extra = "，并已同步 " + "；".join(extras) if extras else ""
-        messagebox.showinfo("导入完成", f"已解析为 JSON 并保存 Cookie。\n{summary}{extra}\n{domain_note}")
-
-    def load_saved_session(self, silent: bool = False) -> None:
-        payload = self.session_store.load()
-        if not payload:
-            if not silent:
-                messagebox.showinfo("提示", "本地还没有保存的会话。")
-            return
-        login_mode = payload.get("login_mode", "cookie")
-        display_mode = "账号密码登录" if login_mode == "password" else "Cookie 登录"
-        self.login_mode_var.set(display_mode)
-        self.update_login_mode_ui(display_mode)
-        self.cookie_json = list(payload.get("cookie_json") or [])
-        self.cookie_header = str(payload.get("cookie", "") or "") if not self.cookie_json else ""
-        if self.cookie_json:
-            self.set_cookie_indicator(f"已载入 JSON Cookie（{len(self.cookie_json)} 个）")
-        elif payload.get("cookie"):
-            self.set_cookie_indicator("已载入旧版 Cookie header")
-        else:
-            self.set_cookie_indicator("导入 cookies.txt / json")
-        self.login_id_entry.delete(0, "end")
-        self.login_id_entry.insert(0, str(payload.get("login_id", "")))
-        self.auth_status_var.set(f"已载入本地会话，保存时间：{payload.get('saved_at', '未知')}")
-        self.log_message("已自动载入本地会话。")
-
-    def _run_auth_thread(self, worker) -> None:
-        threading.Thread(target=worker, daemon=True).start()
-
-    def validate_session(self) -> None:
-        cookie = self.get_active_cookie()
-        if not cookie:
-            messagebox.showerror("检测失败", "当前没有 Cookie 可检测。")
-            return
-        self.auth_status_var.set("正在检测当前会话...")
-
-        def worker() -> None:
-            result = self.auth_client.validate_cookie(cookie)
-            self.enqueue_ui(self.apply_auth_result, result, False)
-
-        self._run_auth_thread(worker)
-
-    def login_with_password(self) -> None:
-        login_id = self.login_id_entry.get().strip()
-        password = self.password_entry.get().strip()
-        if not login_id or not password:
-            messagebox.showerror("登录失败", "请先填写账号和密码。")
-            return
-        self.auth_status_var.set("正在尝试账号密码登录...")
-
-        def worker() -> None:
-            result = self.auth_client.login_with_password(login_id, password)
-            self.enqueue_ui(self.apply_auth_result, result, True)
-
-        self._run_auth_thread(worker)
-
-    def apply_auth_result(self, result: AuthResult, from_password_login: bool) -> None:
-        self.auth_status_var.set(result.message)
-        self.log_message(result.message)
-        if result.success and result.cookie:
-            self.cookie_json = []
-            self.cookie_header = result.cookie
-            self.set_cookie_indicator("账号密码登录已生成 Cookie header")
-            if from_password_login:
-                self.login_mode_var.set("Cookie 登录")
-                self.update_login_mode_ui("Cookie 登录")
-            self.save_session()
-        elif from_password_login and result.requires_verification:
-            messagebox.showinfo("需要额外验证", result.message)
-        elif not result.success and not from_password_login:
-            messagebox.showerror("检测失败", result.message)
+    # ── Plugin panel ──────────────────────────────────────────
 
     def open_plugin_panel(self) -> None:
         from pixiv_app.gui.plugin_panel import PluginPanelWindow
 
-        PluginPanelWindow(self.root, cookie=self.get_active_cookie())
+        PluginPanelWindow(self.root)
+
+    # ── Proxy ─────────────────────────────────────────────────
 
     def open_proxy_dialog(self) -> None:
         ProxyDialog(self.root, self.proxy_config, self.save_proxy_config, self.handle_proxy_dialog_action)
+
+    def save_proxy_config(self, config: dict) -> None:
+        self.proxy_config = config
+        manual_count = len(parse_proxy_text(config.get("manual_text", "")))
+        if not config.get("enabled"):
+            self.proxy_summary_var.set("未启用代理池")
+            return
+        summary = f"已启用，列表中 {manual_count} 条"
+        if config.get("use_quake"):
+            summary += f" + Quake({config.get('quake_mode', 'api_v3')})"
+        self.proxy_summary_var.set(summary)
+
+    def format_proxy_text(self, proxies: list[ProxyInfo]) -> str:
+        lines: list[str] = []
+        seen: set[str] = set()
+        for proxy in proxies:
+            if proxy.proxy_url not in seen:
+                seen.add(proxy.proxy_url)
+                lines.append(proxy.proxy_url)
+        return "\n".join(lines)
+
+    def handle_proxy_dialog_action(self, action: str, config: dict) -> str | dict[str, str]:
+        if action != "fetch_preview":
+            return "未知操作"
+        manual_text = str(config.get("manual_text", "")).strip()
+        countries_text = str(config.get("countries_text", "")).strip()
+        countries = [item.strip().upper() for item in countries_text.split(",") if item.strip()]
+        pool = ProxyPool()
+        manual_proxies = parse_proxy_text(manual_text)
+        if manual_proxies:
+            pool.add_proxies(manual_proxies)
+        if config.get("use_quake"):
+            quake = QuakeClient(
+                api_key=str(config.get("quake_api_key", "")),
+                cookie=str(config.get("quake_cookie", "")),
+                mode=str(config.get("quake_mode", "api_v3")),
+            )
+            pool.add_proxies(quake.get_foreign_proxies(size=80, countries=countries or None))
+        total = len(pool.proxies)
+        if total == 0:
+            return {"status": "没有找到可校验的代理，请检查输入。", "manual_text": manual_text}
+        working = pool.verify_all(max_workers=12, max_proxies=min(total, 80))
+        merged_text = self.format_proxy_text(working) if working else manual_text
+        return {"status": f"预校验完成：可用 {len(working)} / 总计 {total}，已回填到代理列表。", "manual_text": merged_text}
+
+    # ── Gallery ───────────────────────────────────────────────
 
     def open_gallery_wall(self) -> None:
         try:
@@ -1075,49 +796,7 @@ class SakuraDownloaderGUI:
         except (OSError, urllib.error.URLError):
             return False
 
-    def save_proxy_config(self, config: dict) -> None:
-        self.proxy_config = config
-        manual_count = len(parse_proxy_text(config.get("manual_text", "")))
-        if not config.get("enabled"):
-            self.proxy_summary_var.set("未启用代理池")
-            return
-        summary = f"已启用，列表中 {manual_count} 条"
-        if config.get("use_quake"):
-            summary += f" + Quake({config.get('quake_mode', 'api_v3')})"
-        self.proxy_summary_var.set(summary)
-
-    def format_proxy_text(self, proxies: list[ProxyInfo]) -> str:
-        lines: list[str] = []
-        seen: set[str] = set()
-        for proxy in proxies:
-            if proxy.proxy_url not in seen:
-                seen.add(proxy.proxy_url)
-                lines.append(proxy.proxy_url)
-        return "\n".join(lines)
-
-    def handle_proxy_dialog_action(self, action: str, config: dict) -> str | dict[str, str]:
-        if action != "fetch_preview":
-            return "未知操作"
-        manual_text = str(config.get("manual_text", "")).strip()
-        countries_text = str(config.get("countries_text", "")).strip()
-        countries = [item.strip().upper() for item in countries_text.split(",") if item.strip()]
-        pool = ProxyPool()
-        manual_proxies = parse_proxy_text(manual_text)
-        if manual_proxies:
-            pool.add_proxies(manual_proxies)
-        if config.get("use_quake"):
-            quake = QuakeClient(
-                api_key=str(config.get("quake_api_key", "")),
-                cookie=str(config.get("quake_cookie", "")),
-                mode=str(config.get("quake_mode", "api_v3")),
-            )
-            pool.add_proxies(quake.get_foreign_proxies(size=80, countries=countries or None))
-        total = len(pool.proxies)
-        if total == 0:
-            return {"status": "没有找到可校验的代理，请检查输入。", "manual_text": manual_text}
-        working = pool.verify_all(max_workers=12, max_proxies=min(total, 80))
-        merged_text = self.format_proxy_text(working) if working else manual_text
-        return {"status": f"预校验完成：可用 {len(working)} / 总计 {total}，已回填到代理列表。", "manual_text": merged_text}
+    # ── Counters ──────────────────────────────────────────────
 
     def reset_counters(self) -> None:
         self.total_works = 0
@@ -1144,152 +823,18 @@ class SakuraDownloaderGUI:
             self.progress_bar.set(max(0.0, min(1.0, float(progress))))
         self.progress_label.configure(text=text)
 
-    def collect_job_config(self) -> dict:
-        return {
-            "mode": self.TARGET_MODE_MAP.get(self.target_mode_var.get(), "user"),
-            "target": self.target_entry.get().strip(),
-            "cookie": self.get_active_cookie(),
-            "keyword_limit": self.keyword_limit_entry.get().strip() or "20",
-            "use_queue": self.use_queue_var.get(),
-            "incremental_wm": self.incremental_wm_var.get(),
-        }
+    def set_total_works(self, total: int) -> None:
+        self.total_works = total
+        self.refresh_overview()
+        self.progress_label.configure(text="正在抓取...")
 
-    def validate_job_config(self, config: dict) -> dict:
-        if self.use_queue_var.get():
-            return self._validate_job_config_queue(config)
-        return self._validate_job_config_legacy(config)
-
-    def _validate_job_config_queue(self, config: dict) -> dict:
-        mode = config["mode"]
-        target = config["target"].strip()
-        if not target:
-            raise ValueError("请输入抓取目标。")
-        if not str(config["keyword_limit"]).isdigit():
-            raise ValueError("关键词数量必须是正整数。")
-        config["keyword_limit"] = max(1, min(int(config["keyword_limit"]), 100))
-        lines, _preview = parse_batch_for_mode(target, ui_mode=mode)
-        if mode == "keyword":
-            if not lines:
-                raise ValueError("请输入关键词（可与 # 标签形式混排）。")
-            return config
-        if not lines:
-            raise ValueError("未解析到有效目标，请检查链接、纯数字 ID 或 #标签。")
-        if mode == "user":
-            for line in lines:
-                if line.category == "novel":
-                    raise ValueError("作者全部作品模式中出现小说链接，请改用文章/小说模式或删除该条目。")
-        if mode == "illust":
-            for line in lines:
-                if line.category != "illust":
-                    raise ValueError("单个作品模式下仅支持插画作品 ID、链接或未知数字 ID。")
-        if mode == "novel":
-            for line in lines:
-                if line.category != "novel":
-                    raise ValueError("文章/小说模式下请输入小说 ID、链接或未知数字 ID。")
-        return config
-
-    def _validate_job_config_legacy(self, config: dict) -> dict:
-        mode = config["mode"]
-        target = config["target"]
-        if not target:
-            raise ValueError("请输入抓取目标。")
-        if mode == "keyword":
-            if not str(config["keyword_limit"]).isdigit():
-                raise ValueError("关键词数量必须是正整数。")
-            config["keyword_limit"] = max(1, min(int(config["keyword_limit"]), 100))
-            return config
-        target_kind, target_id = parse_pixiv_target(target)
-        config["target_kind"] = target_kind
-        config["target_id"] = target_id
-        if mode == "user" and target_kind == "novel":
-            raise ValueError("作者全部作品模式不接受小说链接，请输入作者 ID 或作品链接。")
-        if mode == "illust" and target_kind not in {"illust", "unknown"}:
-            raise ValueError("当前模式是单个作品，请输入作品 ID 或作品链接。")
-        if mode == "novel" and target_kind in {"user", "illust"}:
-            raise ValueError("当前模式是文章/小说，请输入小说 ID 或小说链接。")
-        return config
-
-    def _plugins_root(self) -> Path:
-        return plugins_root()
-
-    def _plugin_roots(self) -> list[Path]:
-        return plugin_roots()
+    # ── Plugin manager ────────────────────────────────────────
 
     def _plugin_manager(self) -> PluginManager:
         if getattr(self, "_cached_plugin_manager", None) is None:
-            self._cached_plugin_manager = PluginManager(self._plugin_roots())
+            self._cached_plugin_manager = PluginManager(plugin_roots())
             self._cached_plugin_manager.load_all()
         return self._cached_plugin_manager
-
-    def _validate_x_url(self) -> None:
-        text = self.target_entry.get().strip()
-        if not text:
-            raise ValueError("请输入 X / Twitter 抓取目标。")
-        mode = self.X_TARGET_MODE_MAP.get(self.target_mode_var.get(), "x_user")
-        normalized = self._normalize_x_target(text, mode=mode)
-        if normalized:
-            if mode == "x_status" and "/status/" not in normalized.lower():
-                raise ValueError("单个推文模式请输入完整推文链接。")
-            return
-        x_plugin = self._plugin_manager().plugins.get("X")
-        if x_plugin is not None and not x_plugin.can_handle(text):
-            raise ValueError(
-                "目标格式不符合当前 X 模式；作者模式可填作者名，单个模式填推文链接，搜索模式填关键词。"
-            )
-
-    def _normalize_x_target(self, text: str, *, mode: str | None = None) -> str:
-        mode = mode or self.X_TARGET_MODE_MAP.get(self.target_mode_var.get(), "x_user")
-        value = text.strip()
-        if not value:
-            return ""
-        lower = value.lower()
-        if mode == "x_keyword":
-            return f"https://x.com/search?q={quote(value)}&src=typed_query&f=media"
-        if mode == "x_status":
-            return value if ("twitter.com/" in lower or "x.com/" in lower) and "/status/" in lower else ""
-        if "twitter.com/" in lower or "x.com/" in lower:
-            if "/status/" in lower:
-                return ""
-            if lower.rstrip("/").endswith("/media"):
-                return value
-            return value.rstrip("/") + "/media"
-        if "://" in value:
-            return value
-        if value.startswith("@"):
-            value = value[1:]
-        if len(value) <= 15 and value.replace("_", "").isalnum():
-            return f"https://x.com/{value}/media"
-        return ""
-
-    def _x_max_items(self) -> int:
-        value = self.keyword_limit_entry.get().strip() or "20"
-        if not value.isdigit():
-            raise ValueError("抓取数量必须是正整数。")
-        return max(1, min(int(value), 120))
-
-    def _validate_xhs_target(self) -> str:
-        text = self.target_entry.get().strip()
-        if not text:
-            raise ValueError("请输入小红书抓取目标。")
-        mode = self.XHS_TARGET_MODE_MAP.get(self.target_mode_var.get(), "xhs_keyword")
-        lower = text.lower()
-        if mode == "xhs_keyword":
-            if "xiaohongshu.com" in lower or "xhslink.com" in lower:
-                raise ValueError("搜索关键词模式请输入关键词；小红书链接请切换到“单篇笔记”或“链接解析”。")
-            return text
-        if mode == "xhs_note":
-            if "xiaohongshu.com/explore/" not in lower and "xhslink.com" not in lower and "note_id" not in lower:
-                raise ValueError("单篇笔记模式请输入小红书笔记链接或 xhslink.com 分享链接。")
-            return text
-        if "xiaohongshu.com" not in lower and "xhslink.com" not in lower:
-            raise ValueError("链接解析模式请输入 xiaohongshu.com 或 xhslink.com 链接。")
-        return text
-
-    def _xhs_max_items(self) -> int:
-        value = self.keyword_limit_entry.get().strip() or "20"
-        if not value.isdigit():
-            raise ValueError("抓取数量必须是正整数。")
-        return max(1, min(int(value), 50))
 
     def _plugin_max_items(self) -> int:
         value = self.keyword_limit_entry.get().strip() or "20"
@@ -1297,90 +842,22 @@ class SakuraDownloaderGUI:
             raise ValueError("抓取数量必须是正整数。")
         return max(1, min(int(value), 200))
 
+    # ── Download flow ─────────────────────────────────────────
+
     def start_download(self) -> None:
         if self.is_downloading:
             return
-        if self.platform_var.get() == "插件自动识别":
-            target = self.target_entry.get().strip()
-            if not target:
-                messagebox.showerror("输入错误", "请输入插件解析目标。")
-                return
-            try:
-                max_items = self._plugin_max_items()
-            except ValueError as exc:
-                messagebox.showerror("输入错误", str(exc))
-                return
-            self.reset_counters()
-            self.is_downloading = True
-            self.stop_event.clear()
-            self.start_button.configure(state="disabled")
-            self.hero_start_button.configure(state="disabled")
-            self.stop_button.configure(state="normal")
-            self.set_inputs_state(False)
-            self.progress_label.configure(text="正在匹配插件...")
-            self.log_message(f"准备开始：平台=插件自动识别，目标={target[:120]}")
-            self.download_thread = threading.Thread(
-                target=self.run_download_generic_plugin_thread,
-                args=(target, max_items),
-                daemon=True,
-            )
-            self.download_thread.start()
-            return
-        if self.platform_var.get() == "小红书":
-            try:
-                target = self._validate_xhs_target()
-                max_items = self._xhs_max_items()
-            except ValueError as exc:
-                messagebox.showerror("输入错误", str(exc))
-                return
-            self.reset_counters()
-            self.is_downloading = True
-            self.stop_event.clear()
-            self.start_button.configure(state="disabled")
-            self.hero_start_button.configure(state="disabled")
-            self.stop_button.configure(state="normal")
-            self.set_inputs_state(False)
-            self.progress_label.configure(text="正在准备小红书任务...")
-            self.log_message(f"准备开始：平台=小红书，模式={self.target_mode_var.get()}，目标={target[:120]}")
-            self.download_thread = threading.Thread(
-                target=self.run_download_xiaohongshu_thread,
-                args=(target, max_items),
-                daemon=True,
-            )
-            self.download_thread.start()
-            return
-        if self.platform_var.get() != "Pixiv":
-            try:
-                self._validate_x_url()
-            except ValueError as exc:
-                messagebox.showerror("输入错误", str(exc))
-                return
-            raw_target = self.target_entry.get().strip()
-            x_mode = self.X_TARGET_MODE_MAP.get(self.target_mode_var.get(), "x_user")
-            url = self._normalize_x_target(raw_target, mode=x_mode) or raw_target
-            try:
-                max_items = self._x_max_items()
-            except ValueError as exc:
-                messagebox.showerror("输入错误", str(exc))
-                return
-            self.reset_counters()
-            self.is_downloading = True
-            self.stop_event.clear()
-            self.start_button.configure(state="disabled")
-            self.hero_start_button.configure(state="disabled")
-            self.stop_button.configure(state="normal")
-            self.set_inputs_state(False)
-            self.progress_label.configure(text="正在准备 X 任务...")
-            self.log_message(f"准备开始：平台=X / Twitter，模式={self.target_mode_var.get()}，目标={url[:120]}")
-            self.download_thread = threading.Thread(target=self.run_download_x_thread, args=(url, max_items), daemon=True)
-            self.download_thread.start()
-            return
 
+        target = self.target_entry.get().strip()
+        if not target:
+            messagebox.showerror("输入错误", "请输入插件解析目标。")
+            return
         try:
-            config = self.validate_job_config(self.collect_job_config())
+            max_items = self._plugin_max_items()
         except ValueError as exc:
             messagebox.showerror("输入错误", str(exc))
             return
+
         self.reset_counters()
         self.is_downloading = True
         self.stop_event.clear()
@@ -1388,9 +865,14 @@ class SakuraDownloaderGUI:
         self.hero_start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.set_inputs_state(False)
-        self.progress_label.configure(text="正在准备任务...")
-        self.log_message(f"准备开始：模式={self.target_mode_var.get()}，目标={config['target']}")
-        self.download_thread = threading.Thread(target=self.run_download, args=(config,), daemon=True)
+        self.progress_label.configure(text="正在匹配插件...")
+        self.log_message(f"准备开始：目标={target[:120]}")
+
+        self.download_thread = threading.Thread(
+            target=self.run_download_generic_plugin_thread,
+            args=(target, max_items),
+            daemon=True,
+        )
         self.download_thread.start()
 
     def stop_download(self) -> None:
@@ -1435,207 +917,6 @@ class SakuraDownloaderGUI:
         self.progress_label.configure(text="任务异常")
         self.finalize_ui()
         messagebox.showerror("运行错误", message)
-
-    def prepare_proxy_pool(self) -> ProxyPool | None:
-        manual_text = self.proxy_config.get("manual_text", "")
-        use_quake = bool(self.proxy_config.get("use_quake"))
-        countries_text = str(self.proxy_config.get("countries_text", "")).strip()
-        countries = [item.strip().upper() for item in countries_text.split(",") if item.strip()]
-        pool = ProxyPool()
-        manual_proxies = parse_proxy_text(manual_text)
-        if manual_proxies:
-            pool.add_proxies(manual_proxies)
-            pool.verify_all(max_workers=12, max_proxies=80)
-            self.enqueue_ui(self.log_message, f"手动代理校验完成: 可用 {len(pool.working_proxies)}/{len(manual_proxies)}")
-        if use_quake:
-            quake = QuakeClient(
-                api_key=self.proxy_config.get("quake_api_key", ""),
-                cookie=self.proxy_config.get("quake_cookie", ""),
-                mode=self.proxy_config.get("quake_mode", "api_v3"),
-            )
-            pool.collect_until_target(
-                quake_client=quake,
-                target_working=5,
-                stable_rounds=2,
-                fetch_batch_size=60,
-                verify_batch_size=40,
-                max_rounds=6,
-                max_workers=12,
-                countries=countries or None,
-            )
-            self.enqueue_ui(self.log_message, f"Quake 抓取并校验后可用代理: {len(pool.working_proxies)}")
-        if not pool.working_proxies:
-            self.enqueue_ui(self.log_message, "未获得可用代理，将回退到直连模式。")
-            return None
-        return pool
-
-    def run_download(self, config: dict) -> None:
-        try:
-            if config.get("use_queue", True):
-                self.run_download_queue(config)
-            else:
-                self.run_download_legacy(config)
-        except Exception as exc:
-            self.enqueue_ui(self.handle_error, f"程序运行出错: {exc}")
-
-    def run_download_x_thread(self, url: str, max_items: int = 20) -> None:
-        """Parse and download via bundled X plugin (Playwright); not using Pixiv SQLite task queue."""
-        try:
-            plugin = self._plugin_manager().plugins.get("X")
-            if plugin is None or not plugin.validate():
-                self.enqueue_ui(
-                    self.handle_error,
-                    "X 插件不可用：请 pip install playwright httpx && playwright install chromium，"
-                    "并确认 plugins/x 存在后重启应用或稍后在插件管理中重载。",
-                )
-                return
-
-            self.enqueue_ui(self.log_message, "正在解析 X 页面…")
-            if hasattr(plugin, "config"):
-                plugin.config.max_media_items = max_items
-            resources = plugin.parse(url)
-            resources = resources[:max_items]
-            if self.stop_event.is_set():
-                self.enqueue_ui(self.handle_finish, True)
-                return
-            if not resources:
-                self.enqueue_ui(
-                    self.handle_error,
-                    "解析结果为空（无媒体、需登录，或 X 临时风控/限流）。请等待 1-3 分钟后重试，"
-                    "必要时重新导入 x.com_cookies.txt。",
-                )
-                return
-
-            total = len(resources)
-            self.enqueue_ui(self.set_total_works, total)
-            save_root = downloads_root() / "x"
-            completed = 0
-            for i, res in enumerate(resources):
-                if self.stop_event.is_set():
-                    break
-                try:
-                    paths = plugin.download(res, save_root)
-                    ok = len(paths) > 0
-                    pages = len(res.files)
-                    downloaded = len(paths)
-                    failed_p = 0 if ok else max(1, pages)
-                    msg = f"[X] {res.title[:60]} — 保存文件 {downloaded}/{pages}"
-                    result = DownloadResult(
-                        work_id=i,
-                        total_pages=max(pages, 1),
-                        downloaded_pages=downloaded if ok else 0,
-                        skipped_pages=0,
-                        failed_pages=failed_p if not ok else 0,
-                        ok=ok,
-                        message=msg,
-                    )
-                except Exception as exc:
-                    result = DownloadResult(
-                        work_id=i,
-                        total_pages=1,
-                        downloaded_pages=0,
-                        skipped_pages=0,
-                        failed_pages=1,
-                        ok=False,
-                        message=f"[X] 下载失败: {exc}",
-                    )
-                completed += 1
-                self.enqueue_ui(self.handle_result, result, completed, total)
-
-            self.enqueue_ui(self.handle_finish, self.stop_event.is_set())
-        except Exception as exc:
-            self.enqueue_ui(self.handle_error, f"X 下载出错: {exc}")
-
-    def run_download_xiaohongshu_thread(self, target: str, max_items: int = 20) -> None:
-        """Parse and download via Xiaohongshu plugin (Playwright)."""
-        try:
-            plugin = self._plugin_manager().plugins.get("小红书")
-            if plugin is None:
-                self.enqueue_ui(self.handle_error, "小红书插件不可用：未找到 plugins/xiaohongshu。")
-                return
-            if not plugin.validate():
-                self.enqueue_ui(
-                    self.handle_error,
-                    "小红书插件依赖不可用：请 pip install playwright requests && playwright install chromium。",
-                )
-                return
-
-            if hasattr(plugin, "config"):
-                plugin.config.max_notes_per_session = max_items
-
-            progress_state = {"base": 0.02, "span": 0.28}
-
-            def on_xhs_progress(message: str, value: float) -> None:
-                progress = progress_state["base"] + max(0.0, min(1.0, float(value))) * progress_state["span"]
-                self.enqueue_ui(self.update_stage_progress, message, progress)
-
-            if hasattr(plugin, "progress_callback"):
-                plugin.progress_callback = on_xhs_progress
-
-            self.enqueue_ui(self.update_stage_progress, "小红书：准备解析", 0.02)
-            self.enqueue_ui(self.log_message, "正在解析小红书页面…")
-            resources = plugin.parse(target)
-            resources = resources[:max_items]
-            if self.stop_event.is_set():
-                self.enqueue_ui(self.handle_finish, True)
-                return
-            if not resources:
-                self.enqueue_ui(
-                    self.handle_error,
-                    "解析结果为空（无图片、需登录，或页面暂时不可访问）。请确认已导入小红书 Cookie 后再试。",
-                )
-                return
-
-            total = len(resources)
-            self.enqueue_ui(self.set_total_works, total)
-            self.enqueue_ui(self.update_stage_progress, f"小红书：解析到 {total} 个资源，准备下载", 0.30)
-            save_root = downloads_root()
-            completed = 0
-            for i, res in enumerate(resources):
-                if self.stop_event.is_set():
-                    break
-                progress_state["base"] = 0.30 + (i / total) * 0.68
-                progress_state["span"] = 0.68 / total
-                self.enqueue_ui(self.update_stage_progress, f"小红书：下载第 {i + 1}/{total} 个资源", progress_state["base"])
-                try:
-                    paths = plugin.download(res, save_root)
-                    ok = len(paths) > 0
-                    pages = len(res.files) if res.files else max(len(paths), 1)
-                    downloaded = len(paths)
-                    failed_p = 0 if ok else max(1, pages)
-                    title = res.title or res.id or f"项目 {i + 1}"
-                    result = DownloadResult(
-                        work_id=i,
-                        total_pages=max(pages, 1),
-                        downloaded_pages=downloaded if ok else 0,
-                        skipped_pages=0,
-                        failed_pages=failed_p if not ok else 0,
-                        ok=ok,
-                        message=f"[小红书] {title[:60]} — 保存文件 {downloaded}/{max(pages, 1)}",
-                    )
-                except Exception as exc:
-                    result = DownloadResult(
-                        work_id=i,
-                        total_pages=1,
-                        downloaded_pages=0,
-                        skipped_pages=0,
-                        failed_pages=1,
-                        ok=False,
-                        message=f"[小红书] 下载失败: {exc}",
-                    )
-                completed += 1
-                self.enqueue_ui(self.handle_result, result, completed, total)
-
-            self.enqueue_ui(self.update_stage_progress, "小红书：任务收尾中", 0.98)
-            self.enqueue_ui(self.handle_finish, self.stop_event.is_set())
-        except Exception as exc:
-            self.enqueue_ui(self.handle_error, f"小红书下载出错: {exc}")
-        finally:
-            try:
-                if "plugin" in locals() and hasattr(plugin, "progress_callback"):
-                    plugin.progress_callback = None
-            except Exception:
-                pass
 
     def run_download_generic_plugin_thread(self, target: str, max_items: int = 20) -> None:
         """Auto-match a plugin by can_handle(), then parse and download."""
@@ -1700,162 +981,6 @@ class SakuraDownloaderGUI:
             self.enqueue_ui(self.handle_finish, self.stop_event.is_set())
         except Exception as exc:
             self.enqueue_ui(self.handle_error, f"插件自动解析出错: {exc}")
-
-    def run_download_queue(self, config: dict) -> None:
-        requested_workers = int(self.thread_slider.get())
-        request_delay = float(self.delay_slider.get())
-        proxy_pool = self.prepare_proxy_pool() if self.proxy_config.get("enabled") else None
-        max_workers = resolve_workers(requested_workers, proxy_mode=proxy_pool is not None)
-        if proxy_pool is not None:
-            self.enqueue_ui(self.log_message, f"代理模式启用，线程数自动调整为 {max_workers}")
-
-        cookie = config["cookie"]
-
-        def on_progress(result: DownloadResult, completed: int, total: int) -> None:
-            self.enqueue_ui(self.handle_result, result, completed, total)
-
-        specs, preview, summary = collect_task_specs(
-            config=config,
-            cookie=cookie,
-            proxy_pool=proxy_pool,
-            incremental_watermark=config.get("incremental_wm", True),
-            stop_event=self.stop_event,
-        )
-        self.enqueue_ui(self.log_message, summary)
-        stat_txt = ", ".join(f"{k}:{v}" for k, v in sorted(preview.by_category.items())) or "无"
-        self.enqueue_ui(self.log_message, f"解析预览: {stat_txt}（输入条数 {preview.total_lines}）")
-        if not specs:
-            self.enqueue_ui(self.handle_error, "没有生成下载任务（列表为空或被水印过滤）。")
-            return
-
-        inserted, skipped, requeued_failed, incomplete_left = enqueue_specs_to_library(specs)
-        self.enqueue_ui(
-            self.log_message,
-            f"任务队列: 新插入 {inserted}，指纹跳过 {skipped}，失败重排队 {requeued_failed}，"
-            f"本批未完成 {incomplete_left}",
-        )
-        if incomplete_left == 0 and inserted == 0 and requeued_failed == 0:
-            self.enqueue_ui(
-                self.handle_error,
-                "本批链接对应的任务均已完成（download_tasks 中为已完成状态）。"
-                "若要强制重新下载，需先在库中清理对应记录或扩展任务模型。",
-            )
-            return
-
-        if inserted == 0 and (incomplete_left > 0 or requeued_failed > 0):
-            self.enqueue_ui(
-                self.log_message,
-                "指纹已在队列中；将继续执行未完成 / 失败的任务（无需重复插入）。",
-            )
-
-        self.enqueue_ui(self.set_total_works, incomplete_left)
-
-        run_queue_until_idle(
-            cookie=cookie,
-            proxy_pool=proxy_pool,
-            max_workers=max_workers,
-            request_delay=request_delay,
-            stop_event=self.stop_event,
-            progress_callback=on_progress,
-            poll_ui=None,
-            progress_total=incomplete_left,
-        )
-        self.enqueue_ui(self.handle_finish, self.stop_event.is_set())
-
-    def run_download_legacy(self, config: dict) -> None:
-        try:
-            requested_workers = int(self.thread_slider.get())
-            request_delay = float(self.delay_slider.get())
-            proxy_pool = self.prepare_proxy_pool() if self.proxy_config.get("enabled") else None
-            max_workers = resolve_workers(requested_workers, proxy_mode=proxy_pool is not None)
-            if proxy_pool is not None:
-                self.enqueue_ui(self.log_message, f"代理模式启用，线程数自动调整为 {max_workers}")
-
-            mode = config["mode"]
-            cookie = config["cookie"]
-
-            def on_progress(result: DownloadResult, completed: int, total: int) -> None:
-                self.enqueue_ui(self.handle_result, result, completed, total)
-
-            if mode == "user":
-                target_kind = config["target_kind"]
-                target_id = config["target_id"]
-                kind_text = {"user": "作者 ID", "illust": "作品 ID", "unknown": "数字 ID", "novel": "小说 ID"}
-                self.enqueue_ui(self.log_message, f"已识别为{kind_text.get(target_kind, '目标')}: {target_id}")
-                resolved_user_id, work_ids = fetch_user_work_ids(user_id=target_id, cookie=cookie, proxy_pool=proxy_pool, input_kind=target_kind)
-                if resolved_user_id != target_id or target_kind == "illust":
-                    self.enqueue_ui(self.log_message, f"已自动解析到作者 ID: {resolved_user_id}")
-                self.enqueue_ui(self.set_total_works, len(work_ids))
-                if not work_ids:
-                    self.enqueue_ui(self.handle_error, "没有获取到可下载的作品。请确认 ID 正确，或尝试提供可用会话。")
-                    return
-                self.enqueue_ui(self.log_message, f"已获取 {len(work_ids)} 个作品，开始下载。")
-                download_user_works(
-                    user_id=resolved_user_id,
-                    cookie=cookie,
-                    max_workers=max_workers,
-                    request_delay=request_delay,
-                    stop_event=self.stop_event,
-                    progress_callback=on_progress,
-                    work_ids=work_ids,
-                    proxy_pool=proxy_pool,
-                )
-            elif mode == "illust":
-                target_id = config["target_id"]
-                self.enqueue_ui(self.set_total_works, 1)
-                result = download_illust(
-                    illust_id=target_id,
-                    user_id=0,
-                    cookie=cookie,
-                    save_subdir=str(Path("single_illust") / str(target_id)),
-                    request_delay=request_delay,
-                    stop_event=self.stop_event,
-                    proxy_pool=proxy_pool,
-                )
-                self.enqueue_ui(self.handle_result, result, 1, 1)
-            elif mode == "novel":
-                target_id = config["target_id"]
-                self.enqueue_ui(self.set_total_works, 1)
-                result = download_novel(
-                    novel_id=target_id,
-                    cookie=cookie,
-                    save_subdir="novels",
-                    request_delay=request_delay,
-                    stop_event=self.stop_event,
-                    proxy_pool=proxy_pool,
-                )
-                self.enqueue_ui(self.handle_result, result, 1, 1)
-            elif mode == "keyword":
-                keyword = config["target"]
-                limit = config["keyword_limit"]
-                preview_ids = search_illust_ids_by_keyword(keyword, cookie=cookie, proxy_pool=proxy_pool, limit=limit)
-                self.enqueue_ui(self.set_total_works, len(preview_ids))
-                if not preview_ids:
-                    self.enqueue_ui(self.handle_error, f"关键词“{keyword}”没有搜索到可下载作品。")
-                    return
-                self.enqueue_ui(self.log_message, f"关键词“{keyword}”搜索到 {len(preview_ids)} 个作品，开始下载。")
-                download_keyword_works(
-                    keyword,
-                    cookie=cookie,
-                    max_workers=max_workers,
-                    request_delay=request_delay,
-                    stop_event=self.stop_event,
-                    progress_callback=on_progress,
-                    proxy_pool=proxy_pool,
-                    limit=limit,
-                    work_ids=preview_ids,
-                )
-            else:
-                raise PixivRequestError(f"不支持的模式: {mode}")
-
-            self.enqueue_ui(self.handle_finish, self.stop_event.is_set())
-        except Exception as exc:
-            self.enqueue_ui(self.handle_error, f"程序运行出错: {exc}")
-
-    def set_total_works(self, total: int) -> None:
-        self.total_works = total
-        self.refresh_overview()
-        self.progress_label.configure(text="正在抓取...")
 
     def run(self) -> None:
         self.root.mainloop()

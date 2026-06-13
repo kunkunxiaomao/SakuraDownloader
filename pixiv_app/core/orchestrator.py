@@ -1,8 +1,4 @@
-"""
-Bridge URL-level plugin parsing with the rest of the app (tasks/GUI logging).
-
-Full TaskQueue integration can map Resource → DownloadTaskSpec per site.
-"""
+"""Bridge URL-level plugin parsing with the rest of the app (tasks/GUI logging)."""
 
 from __future__ import annotations
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_LIBRARY_DB = "pixiv_app_library.db"
+DEFAULT_LIBRARY_DB = "sakura_library.db"
 
 
 @dataclass
@@ -20,7 +20,7 @@ class DownloadFileRecord:
     content_hash: str = ""
 
 
-class PixivLibrary:
+class SakuraLibrary:
     def __init__(self, db_path: str | Path = DEFAULT_LIBRARY_DB) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True) if self.db_path.parent != Path(".") else None
@@ -478,6 +478,9 @@ class PixivLibrary:
         )
         row = self.connection.execute("SELECT tag_id FROM tags WHERE name = ?", (name,)).fetchone()
         return int(row["tag_id"])
+
+
+PixivLibrary = SakuraLibrary  # backward-compatibility alias
 
 
 def _as_int(value: Any) -> int | None:
